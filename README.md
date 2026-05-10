@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/logo.svg" alt="cross-toolchain logo" width="120" height="120"/>
+</p>
+
 # cross-toolchain
 
 A Docker image bundling five cross-compilers, a matched Go runtime, and a statically linkable libbpf, designed for projects that need to ship a single CGO binary running on every Linux distribution from CentOS 6 (glibc 2.12, released 2010) through current releases, plus macOS Intel and Apple Silicon. Every binary the image produces is verified to honor the GLIBC ABI floor of its target.
