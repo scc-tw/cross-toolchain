@@ -1,0 +1,24 @@
+Remove unifdef.c's local `strlcpy` declaration that conflicts with Apple SDK.
+
+Linux 2.6.32 era unifdef.c declares `size_t strlcpy(...)` as a forward
+prototype because some Linux distros' glibc didn't have strlcpy at the time
+(it's a BSD extension that landed in glibc 2.38). On macOS, strlcpy IS in
+<string.h>, AND _FORTIFY_SOURCE rewrites the call to __builtin___strlcpy_chk.
+The prototype mismatch crashes Apple Clang 21:
+
+    scripts/unifdef.c:84:8: error: expected parameter declarator
+    scripts/unifdef.c:84:8: error: conflicting types for '__builtin___strlcpy_chk'
+
+We delete the local prototype since macOS's <string.h> already declares it.
+
+--- a/scripts/unifdef.c	2009-12-03 14:51:21.000000000 -0800
++++ b/scripts/unifdef.c	2026-05-08 11:55:00.000000000 -0700
+@@ -81,8 +81,6 @@
+ #include <string.h>
+ #include <unistd.h>
+
+-size_t strlcpy(char *dst, const char *src, size_t siz);
+-
+ /* types of input lines: */
+ typedef enum {
+ 	LT_TRUEI,		/* a true #if with ignore flag */

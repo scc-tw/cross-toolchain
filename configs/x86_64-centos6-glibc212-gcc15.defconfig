@@ -1,0 +1,239 @@
+# Crosstool-ng 1.25.0 defconfig — EXPERIMENTAL: GCC 15.2.0 + glibc 2.12.1
+#
+# This is the experimental "Phase 1" config: pin ct-ng at 1.25 (last release
+# with glibc 2.12 support) but backport GCC 15.2.0 (released 2025-08-15) into
+# its package metadata. ct-ng upstream has never tested this combination —
+# expect glibc 2.12 source vs GCC 15 strict-mode collisions.
+#
+# Sister config: x86_64-centos6-glibc212.defconfig (uses GCC 11.2.0 — the
+# original verified-working combo, kept for the macOS host build path).
+#
+# Target tuple:  x86_64-centos6-linux-gnu
+# Versions:
+#   ct-ng     1.25.0  (last release with glibc 2.12 in packages/glibc/)
+#   GCC       15.2.0  (backported via toolchain/patches/ct-ng-1.25-gcc15-backport/)
+#   glibc     2.12.1  (CentOS 6 ABI floor, 2010-released)
+#   binutils  2.38
+#   kernel    2.6.32.71
+#
+# Host:    Linux x86_64 / arm64 (any modern distro, ct-ng built from source)
+# Build:   docker build (see toolchain/Dockerfile)
+# Output:  /opt/x-tools/x86_64-centos6-linux-gnu/  (inside container)
+
+CT_CONFIG_VERSION="4"
+
+# === Allow obsolete packages — needed for glibc 2.12.1 selection ===
+CT_OBSOLETE=y
+CT_EXPERIMENTAL=y
+
+# === Toolchain target — matches reference tuple exactly ===
+CT_ARCH_X86=y
+CT_ARCH_64=y
+CT_TARGET_VENDOR="centos6"
+
+# === Multilib: x86_64 (default) + i686 (32-bit) ===
+# CentOS 6 shipped both x86_64 and i686 glibc; -m32 builds expect i686 sysroot
+# next to the x86_64 sysroot. Enabling this doubles glibc + libgcc build time
+# (~2x phase 1 wall clock) but is needed if any consumer of this toolchain
+# wants to cross-compile 32-bit binaries.
+# DEMULTILIB is the OPPOSITE (single-variant only) — leave it default-off.
+CT_MULTILIB=y
+
+# Linux container host doesn't need this (config.guess works fine on
+# Linux arm64), but keep it on for portability.
+CT_OVERRIDE_CONFIG_GUESS_SUB=y
+
+# === Target CFLAGS for libgcc / libatomic / libstdc++ etc. ===
+# Flags GCC uses when building its OWN runtime libraries for the target.
+# (NOT applied to user code that uses the resulting toolchain — that's
+# governed by user's build flags.)
+#
+# Demotions for GCC 14+ defaults that broke libatomic build vs glibc 2.12:
+#   -Wpointer-to-int-cast / -Wint-to-pointer-cast : libatomic does
+#     (uintptr_t)void_ptr alignment masks that fire this warning in some
+#     contexts (cast is technically valid since uintptr_t == pointer width).
+#
+# `-fpermissive` is C++ only. ct-ng 1.25 falls cxxflags_for_target back to
+# cflags_for_target if no separate var, so listing here gets it into both.
+# GCC silently ignores -fpermissive in pure C compiles. Side effect: same
+# C++ source may now warn loudly about pointer-truncation casts that the
+# compiler thinks lose precision (libstdc++ mt_allocator.cc reinterpret_cast
+# from void* to uintptr_t hits this somehow even on x86_64). Pragmatic fix
+# until we figure out why GCC sees uintptr_t as `unsigned int` here.
+# Two demotions for legacy C casts that GCC 14+ promotes to default error:
+#   -Wno-error=pointer-to-int-cast / -Wno-error=int-to-pointer-cast
+# Plus -fpermissive for C++ "loses precision" errors in libstdc++.
+#
+# IMPORTANT: -Wno-error=narrowing was tried but broke stage-1 libgcc configure
+# (its conftest.c compile failed). Removed. The narrowing demotion isn't
+# needed because libstdc++'s Makefile already adds -Wno-error=narrowing
+# internally for its own build.
+#
+# Underlying anomaly we're papering over: GCC 15 building libstdc++/libitm
+# against glibc 2.12 sysroot sees uintptr_t as 'unsigned int' (32-bit) in
+# x86_64 compile context. -fpermissive lets libstdc++ accept the cast;
+# libitm we sidestep entirely with --disable-libitm in CT_CC_GCC_EXTRA_CONFIG
+# (libitm = Intel TM, never used in cgo Go workloads).
+CT_TARGET_CFLAGS="-fpermissive -Wno-error=pointer-to-int-cast -Wno-error=int-to-pointer-cast -Wno-error=stringop-overflow"
+
+# === GCC configure extra args ===
+# Disable libitm (Intel Transactional Memory): GCC 15 + glibc 2.12 hits
+# pointer-precision errors that even -fpermissive + -Wno-error=permissive
+# can't reliably defeat (libitm Makefile re-adds -Werror=permissive
+# internally). libitm has no real use in our cgo Go target → skip.
+# Also disable libsanitizer (was already off in defconfig) for clarity.
+# --disable-werror: GCC bootstrap stage2+ default adds -Werror via
+# `--enable-werror-always` flag. That flag promotes warnings (especially
+# permissive-class) in libitm/libstdc++ etc. to errors, defeating our
+# CT_TARGET_CFLAGS demotions. With --disable-werror the bootstrap doesn't
+# auto-add -Werror, so our `-fpermissive`/`-Wno-error=*` actually take effect
+# in libitm. Side effect: real build-time warnings in GCC 15.2 source no
+# longer abort build — fine for stable release. See docker_experiments.md
+# Phase 1.2 survey for full reasoning.
+CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"
+
+# === Install location (inside container) ===
+CT_PREFIX_DIR="/opt/x-tools/${CT_TARGET}"
+
+# === Linux kernel headers — CentOS 6 actual kernel ===
+CT_KERNEL_LINUX=y
+CT_LINUX_V_2_6_32=y
+CT_LINUX_VERSION="2.6.32.71"
+
+# === C library: glibc 2.12.1 (CentOS 6) ===
+CT_LIBC_GLIBC=y
+CT_GLIBC_V_2_12_1=y
+CT_GLIBC_VERSION="2.12.1"
+CT_THREADS="nptl"
+CT_GLIBC_KERNEL_VERSION_NONE=y
+CT_GLIBC_FORCE_UNWIND=y
+CT_GLIBC_BUILD_SSP=y
+CT_GLIBC_SSP_DEFAULT=y
+CT_GLIBC_ENABLE_OBSOLETE_RPC=y
+
+# Workaround flags for glibc 2.12 source built with GCC 15.
+#
+# Two distinct kinds of GCC 15 / glibc 2.12 conflict:
+#
+# 1. *Warnings promoted to errors*. GCC 14+ promotes -Wimplicit-int /
+#    -Wincompatible-pointer-types / -Wint-conversion / etc. to hard errors
+#    by default. -Wno-error + -Wno-* demotes them.
+#
+# 2. *C language standard tightening*. GCC 14+ defaults to -std=gnu23.
+#    C23 REMOVED K&R-style function declarations / definitions entirely
+#    (not deprecated, *removed*). This makes the syntax a hard error
+#    that no -Wno-* can fix — it's a language-level change.
+#    Glibc 2.12 (2010) has many K&R-style functions, e.g.,
+#    `string/strstr.c:90` triggers
+#    `error: parameter names (without types) in function declaration
+#    [-Wdeclaration-missing-parameter-type]`.
+#    Fix: explicitly request -std=gnu17 (last GNU C dialect that still
+#    accepts K&R; gnu89/gnu99/gnu11 also work but gnu17 is closest match
+#    to "modern but pre-C23").
+#
+# If build still fails, add more -Wno-error=* here OR write source patches
+# in toolchain/patches/ct-ng-1.25-gcc15-backport/packages/glibc/2.12.1/.
+# NOTE: -std=gnu17 alone is *not* enough. GCC 14+ made several specific
+# warnings into hard errors *by default* (not via -Werror). They need
+# explicit -Wno-error=<name> demotion (or -Wno-<name> outright disable):
+#   -Wdeclaration-missing-parameter-type   (K&R def: f(a, b) ; int a; ...)
+#   -Wold-style-definition                  (older K&R definition variant)
+#   -Wold-style-declaration                 (e.g. `static foo();` no return type)
+#   -Wpermissive  (catches more)
+# See GCC 14 release notes "Default behavior change for warnings about
+# legacy C constructs".
+CT_GLIBC_EXTRA_CFLAGS="-std=gnu17 -Wno-error -Wno-error=declaration-missing-parameter-type -Wno-error=old-style-definition -Wno-error=old-style-declaration -Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-missing-attributes -Wno-implicit-int -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-builtin-declaration-mismatch -Wno-declaration-missing-parameter-type"
+
+# === Binutils ===
+CT_BINUTILS_VERSION="2.38"
+CT_BINUTILS_LINKER_LD=y
+CT_BINUTILS_LINKER_DEFAULT="bfd"
+CT_BINUTILS_FORCE_LD_BFD_DEFAULT=y
+CT_BINUTILS_PLUGINS=y
+CT_BINUTILS_DETERMINISTIC_ARCHIVES=y
+CT_BINUTILS_EXTRA_CONFIG_ARRAY="--with-system-zlib"
+
+# === C compiler (GCC 15.2.0 — BACKPORTED) ===
+# Companion lib version requirements for GCC 15:
+#   GMP    >= 6.2  ✓ (we ship 6.2.1)
+#   MPFR   >= 4.1  ✓ (we ship 4.1.0)
+#   MPC    >= 1.2  ✓ (we ship 1.2.1)
+#   ISL    >= 0.18 ✓ (we ship 0.24)
+CT_CC_GCC=y
+CT_GCC_V_15=y
+CT_GCC_VERSION="15.2.0"
+CT_CC_LANG_C=y
+CT_CC_LANG_CXX=y
+CT_CC_GCC_LIBSTDCXX=y
+
+CT_CC_GCC_LIBQUADMATH=y
+CT_CC_GCC_LIBGOMP=y
+CT_CC_GCC_LIBSSP=n
+CT_CC_GCC_LIBSANITIZER=n
+# CT_CC_GCC_LIBMPX dropped in GCC 9+ (Intel MPX deprecated). Keep n.
+CT_CC_GCC_LIBMPX=n
+CT_CC_GCC_LIBSTDCXX_VERBOSE=n
+
+CT_CC_GCC_USE_LTO=y
+CT_CC_GCC_ENABLE_TARGET_OPTSPACE=y
+CT_CC_GCC_SYSTEM_ZLIB=y
+CT_CC_GCC_USE_SYSROOTED_HEADERS=y
+CT_CC_GCC_BUILD_ID=y
+
+# Both SYSV and GNU hash so binary loads on CentOS 6 ld.so (SYSV-only).
+CT_CC_GCC_LNK_HASH_STYLE_BOTH=y
+
+# === Companion libs (host-side GCC build deps) ===
+CT_GMP_VERSION="6.2.1"
+CT_MPFR_VERSION="4.1.0"
+CT_MPC_VERSION="1.2.1"
+CT_ISL_VERSION="0.24"
+
+# === Cross debugger (GDB 16.3 — BACKPORTED, paired with GCC 15.2) ===
+# GCC 15.2 (2025-08) emits DWARF 5 with C++23 demangling that needs GDB 16+
+# to consume properly. GDB 16.3 (2025-09) is the first GDB release after
+# GCC 15.2 and is the natural pair (Linux From Scratch + ct-ng 1.28 both ship
+# this combo). ct-ng 1.25 native max is GDB 11.2 (2022) — too old to demangle
+# C++23 lambdas / understand new DWARF tags. Backported same as GCC 15.
+#
+# Builds: cross-gdb (host-side, debugs x86_64-centos6 target binaries) +
+# gdbserver (target-side, runs on the deployment box for remote debug).
+CT_DEBUG_GDB=y
+CT_GDB_V_16=y
+CT_GDB_VERSION="16.3"
+CT_GDB_CROSS=y
+CT_GDB_CROSS_PYTHON=y
+CT_GDB_CROSS_PYTHON_BINARY="python3"
+# gdbserver disabled: builds of gdbserver target hit GDB-source-internal
+# `RAX/RCX/RDX undeclared` and `static_assert failed` in
+# gdb/gdbserver/linux-x86-low.cc + gdb/nat/amd64-linux-siginfo.c that look
+# like glibc 2.12 multilib header confusion (same family as Error #19
+# select.h). cross-gdb (host-side) is what's actually useful for our
+# workflow (core dump analysis on dev box); gdbserver remote-debug is
+# rarely used for cgo Go on CentOS 6. Re-enable + patch glibc multilib
+# headers if needed in a later phase.
+# CT_GDB_GDBSERVER is not set
+# CT_GDB_GDBSERVER_TOPLEVEL is not set
+
+# === Host compiler quirks ===
+# Linux container build: host gcc is Ubuntu 24.04's gcc-13 (or gcc-14 if we
+# install build-essential -t backports). Different from macOS path which had
+# Apple Clang 21 + libc++ 21 collisions. On Linux these are empty.
+CT_EXTRA_CFLAGS_FOR_HOST=""
+CT_EXTRA_CFLAGS_FOR_BUILD=""
+
+# === Build-time hygiene ===
+CT_PARALLEL_JOBS=0
+CT_USE_PIPES=y
+CT_LOCAL_TARBALLS_DIR="${HOME}/.crosstool-ng-tarballs"
+CT_SAVE_TARBALLS=y
+CT_VERIFY_DOWNLOAD_DIGEST=y
+CT_VERIFY_DOWNLOAD_DIGEST_SHA512=y
+CT_LOG_EXTRA=y
+CT_LOG_LEVEL_MAX="EXTRA"
+CT_LOG_TO_FILE=y
+CT_LOG_FILE_COMPRESS=y
+CT_REMOVE_DOCS=y
+CT_INSTALL_LICENSES=y
+CT_STRIP_HOST_TOOLCHAIN_EXECUTABLES=y
+CT_RM_RF_PREFIX_DIR=y

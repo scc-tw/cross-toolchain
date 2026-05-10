@@ -1,0 +1,58 @@
+# Phase 2 副軸：ct-ng 1.28 native → aarch64-centos7-linux-gnu
+# kernel 3.10.108 / glibc 2.17 / GCC 15.2.0 / binutils 2.42 / GDB 16.3
+# 無 backport，所有版本 ct-ng 1.28 ship 內。
+
+# === Architecture ===
+# kconfig case-sensitive！ARM 大寫，不是 arm。寫錯 ct-ng 不認，silently fallback
+# 到 choice 預設 (alphabetical 第一個 = alpha)，會編出 DEC Alpha toolchain。
+# 參考 ct-ng 1.28 sample: samples/aarch64-ol7u9-linux-gnu/crosstool.config
+CT_ARCH_ARM=y
+CT_ARCH_64=y
+# 不開 multilib (aarch64 沒對應 32-bit)
+CT_TARGET_VENDOR="centos7"
+
+# === Kernel headers ===
+CT_KERNEL_LINUX=y
+CT_LINUX_V_3_10=y
+CT_LINUX_VERSION="3.10.108"
+
+# === C library (glibc 2.17) ===
+CT_LIBC_GLIBC=y
+CT_GLIBC_V_2_17=y
+CT_GLIBC_VERSION="2.17"
+
+# === binutils ===
+CT_BINUTILS_V_2_42=y
+CT_BINUTILS_VERSION="2.42"
+
+# === GCC ===
+CT_GCC_V_15=y
+CT_GCC_VERSION="15.2.0"
+CT_CC_LANG_CXX=y
+CT_CC_GCC_LIBQUADMATH=y
+CT_CC_GCC_LIBGOMP=y
+CT_CC_GCC_LIBSANITIZER=n
+CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"
+
+# === GDB ===
+# CT_DEBUG_GDB 是 menuconfig 主開關（kconfig 用 menuconfig 而不是 config 表示有子選項）
+# 沒設它的話下面所有 CT_GDB_* 全在 `if DEBUG_GDB` block 內被略過 (=失效)。
+# Phase 1 defconfig 有寫，我 Phase 2 複製時漏掉，導致整個 GDB step 被 skip。
+CT_DEBUG_GDB=y
+CT_GDB_V_16=y
+CT_GDB_VERSION="16.3"
+
+# Cross-gdb：跑在 host arm64 上，target=aarch64 sysroot 的 binary
+# default y if DEBUG_GDB=y，但顯式宣告以防將來改
+CT_GDB_CROSS=y
+CT_GDB_CROSS_PYTHON=y
+CT_GDB_CROSS_PYTHON_BINARY="python3"
+
+# gdbserver：target-side binary (aarch64 ELF)，部署到 CentOS 7 機器上跑，
+# 讓 host 端 cross-gdb 透過 TCP 連進去做 remote debug (VSCode 用得到)。
+# aarch64 沒 multilib → 沒 Phase 1 那條 RAX 衝突路徑，可放心開。
+CT_GDB_GDBSERVER=y
+
+# === Output prefix ===
+CT_PREFIX_DIR="/opt/x-tools/${CT_TARGET}"
+CT_PREFIX_DIR_RO=y

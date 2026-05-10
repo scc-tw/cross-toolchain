@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="cross-toolchain logo">
+  <rect width="256" height="256" rx="56" fill="#0f172a"/>
+  <g stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="20">
+    <!-- 左上 → 右下 chevron, cyan -->
+    <path d="M 72 88 L 128 144 L 184 88" stroke="#22d3ee"/>
+    <!-- 左下 → 右上 chevron, purple, 反向 -->
+    <path d="M 72 168 L 128 112 L 184 168" stroke="#a78bfa"/>
+  </g>
+</svg>

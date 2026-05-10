@@ -1,0 +1,132 @@
+# Crosstool-ng 1.25.0 defconfig — capsule8 / reference cross-compilation toolchain.
+#
+# Target tuple matches reference's own toolchain exactly:
+#   x86_64-centos6-linux-gnu
+#
+# Versions:
+#   ct-ng     1.25.0  (last release that ships glibc 2.12)
+#   GCC       11.2.0  (matches reference's GCC; C++20 is supported)
+#   glibc     2.12.1  (CentOS 6 ABI floor)
+#   binutils  2.38    (latest available in 1.25)
+#   kernel    2.6.32.71  (CentOS 6 actual kernel)
+#
+# Host:    macOS arm64 (Apple Silicon)
+# Build:   bash toolchain/build.sh
+# Output:  ~/x-tools/x86_64-centos6-linux-gnu/
+
+CT_CONFIG_VERSION="4"
+
+# === Allow obsolete packages — needed for glibc 2.12.1 selection ===
+CT_OBSOLETE=y
+CT_EXPERIMENTAL=y
+
+# === Toolchain target — matches reference tuple exactly ===
+CT_ARCH_X86=y
+CT_ARCH_64=y
+CT_TARGET_VENDOR="centos6"
+
+# macOS arm64 host — config.guess pre-arm64 patches don't help on Apple Silicon
+# without explicit override.
+CT_OVERRIDE_CONFIG_GUESS_SUB=y
+
+# === Install location ===
+CT_PREFIX_DIR="${HOME}/x-tools/${CT_TARGET}"
+
+# === Linux kernel headers — CentOS 6 actual kernel ===
+# CT_LINUX_V_2_6_32=y: explicit boolean choice. CT_LINUX_VERSION alone is a
+# derived string — silently ignored if no matching boolean choice; defconfig
+# falls through to default (5.16 in 1.25). Same trap for glibc below.
+CT_KERNEL_LINUX=y
+CT_LINUX_V_2_6_32=y
+CT_LINUX_VERSION="2.6.32.71"
+
+# === C library: glibc 2.12.1 (CentOS 6) ===
+CT_LIBC_GLIBC=y
+CT_GLIBC_V_2_12_1=y
+CT_GLIBC_VERSION="2.12.1"
+CT_THREADS="nptl"
+CT_GLIBC_KERNEL_VERSION_NONE=y
+CT_GLIBC_FORCE_UNWIND=y
+CT_GLIBC_BUILD_SSP=y
+CT_GLIBC_SSP_DEFAULT=y
+
+# Sunrpc headers (rpc/*.h). Legacy enterprise C SDKs often need these
+# (Bitdefender SDK is one candidate). Glibc 2.26+ moved this to libtirpc.
+CT_GLIBC_ENABLE_OBSOLETE_RPC=y
+
+# Workaround: GCC 11 + glibc 2.12 still emits a few warnings; -Werror is on by
+# default in glibc's build. These flags ONLY apply to glibc bootstrap; user
+# code built with the resulting toolchain is unaffected.
+CT_GLIBC_EXTRA_CFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-missing-attributes"
+
+# === Binutils ===
+CT_BINUTILS_VERSION="2.38"
+CT_BINUTILS_LINKER_LD=y
+CT_BINUTILS_LINKER_DEFAULT="bfd"
+CT_BINUTILS_FORCE_LD_BFD_DEFAULT=y
+CT_BINUTILS_PLUGINS=y
+CT_BINUTILS_DETERMINISTIC_ARCHIVES=y
+CT_BINUTILS_EXTRA_CONFIG_ARRAY="--with-system-zlib"
+
+# === C compiler (GCC 11.2.0) ===
+# Matches reference exactly. C++20 supported (concepts/coroutines/ranges/
+# three-way comparison/constinit/consteval; modules partial; no std::format).
+CT_CC_GCC=y
+CT_GCC_VERSION="11.2.0"
+CT_CC_LANG_C=y
+CT_CC_LANG_CXX=y
+CT_CC_GCC_LIBSTDCXX=y
+
+# Reference configure flags reproduced 1:1:
+CT_CC_GCC_LIBQUADMATH=n
+CT_CC_GCC_LIBGOMP=n
+CT_CC_GCC_LIBSSP=n
+CT_CC_GCC_LIBSANITIZER=n
+CT_CC_GCC_LIBMPX=y
+CT_CC_GCC_LIBSTDCXX_VERBOSE=n
+
+CT_CC_GCC_USE_LTO=y
+CT_CC_GCC_ENABLE_TARGET_OPTSPACE=y
+CT_CC_GCC_SYSTEM_ZLIB=y
+CT_CC_GCC_USE_SYSROOTED_HEADERS=y
+CT_CC_GCC_BUILD_ID=y
+
+# Emit both SYSV (DT_HASH) and GNU (DT_GNU_HASH) symbol tables so the binary
+# can be loaded by CentOS 6 ld.so (which only reads SYSV).
+CT_CC_GCC_LNK_HASH_STYLE_BOTH=y
+
+# === Companion libs (host-side GCC build deps) ===
+CT_GMP_VERSION="6.2.1"
+CT_MPFR_VERSION="4.1.0"
+CT_MPC_VERSION="1.2.1"
+CT_ISL_VERSION="0.24"
+
+# === Cross debugger — disabled to avoid the GDB build step we previously
+# hit failures on. Can be re-enabled once the main toolchain works. ===
+# CT_DEBUG_GDB is not set
+
+# === Host compiler quirks ===
+# When build host is brew GCC 14 (default for this toolchain on macOS), no
+# special CFLAGS rollback is needed — GCC 14 doesn't promote those warnings
+# to errors by default. Apple Clang 21 used to need
+#   -Wno-error=incompatible-function-pointer-types
+#   -Wno-error=implicit-function-declaration  -Wno-error=int-conversion
+# but those flags are clang-specific and break GCC ("no option ..."). Empty.
+CT_EXTRA_CFLAGS_FOR_HOST=""
+CT_EXTRA_CFLAGS_FOR_BUILD=""
+
+# === Build-time hygiene ===
+CT_PARALLEL_JOBS=0
+CT_USE_PIPES=y
+CT_LOCAL_TARBALLS_DIR="${HOME}/.crosstool-ng-tarballs"
+CT_SAVE_TARBALLS=y
+CT_VERIFY_DOWNLOAD_DIGEST=y
+CT_VERIFY_DOWNLOAD_DIGEST_SHA512=y
+CT_LOG_EXTRA=y
+CT_LOG_LEVEL_MAX="EXTRA"
+CT_LOG_TO_FILE=y
+CT_LOG_FILE_COMPRESS=y
+CT_REMOVE_DOCS=y
+CT_INSTALL_LICENSES=y
+CT_STRIP_HOST_TOOLCHAIN_EXECUTABLES=y
+CT_RM_RF_PREFIX_DIR=y

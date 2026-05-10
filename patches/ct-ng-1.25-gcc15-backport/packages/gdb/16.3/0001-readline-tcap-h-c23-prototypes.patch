@@ -1,0 +1,48 @@
+Add proper prototypes to readline/tcap.h for C23 compatibility.
+
+GDB 16.3 ships with bundled GNU readline. tcap.h declares 6 termcap
+functions with empty parens:
+
+    extern int tgetent ();
+    extern int tgetflag ();
+    extern int tgetnum ();
+    extern char *tgetstr ();
+    extern int tputs ();
+    extern char *tgoto ();
+
+Under C89-C17 semantics this means "unspecified parameters". Under C23
+(GCC 14+ default `-std=gnu23`) this is reinterpreted as `(void)`, i.e.
+zero parameters. When readline's display.c later calls e.g.
+`tputs(str, 1, putchar)` with three arguments, GCC 15 produces:
+
+    error: too many arguments to function 'tputs'; expected 0, have 3
+
+Fix: add the proper prototypes per traditional termcap headers
+(matching ncurses/term.h and the patch posted to bug-readline@gnu.org
+in 2024).
+
+Reference: https://www.mail-archive.com/bug-readline@gnu.org/msg01976.html
+
+--- a/readline/readline/tcap.h	2024-01-01 00:00:00.000000000 +0000
++++ b/readline/readline/tcap.h	2026-05-09 00:00:00.000000000 +0000
+@@ -47,13 +47,13 @@
+
+ extern short ospeed;
+
+-extern int tgetent ();
+-extern int tgetflag ();
+-extern int tgetnum ();
+-extern char *tgetstr ();
++extern int tgetent (char *bp, const char *name);
++extern int tgetflag (const char *id);
++extern int tgetnum (const char *id);
++extern char *tgetstr (const char *id, char **area);
+
+-extern int tputs ();
++extern int tputs (const char *str, int affcnt, int (*putc)(int));
+
+-extern char *tgoto ();
++extern char *tgoto (const char *cap, int col, int row);
+
+ #endif /* HAVE_TERMCAP_H */
+

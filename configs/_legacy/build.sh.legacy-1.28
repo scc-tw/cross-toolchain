@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# Build x86_64-linux-gnu cross-toolchain (GCC 15.2 + glibc 2.12).
+# Driver script around ct-ng. Sets up a work directory outside this repo by
+# default, applies the defconfig, and runs the bootstrap.
+#
+# Usage:
+#   bash toolchain/build.sh                                    # default defconfig
+#   bash toolchain/build.sh path/to/other.defconfig            # alternate config
+#
+# Environment overrides:
+#   WORK_DIR=/path  ct-ng work / build dir (default: <repo>/tmp/ct-x86_64-glibc212)
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEFCONFIG="${1:-${REPO_ROOT}/toolchain/x86_64-glibc212.defconfig}"
+WORK_DIR="${WORK_DIR:-${REPO_ROOT}/tmp/ct-x86_64-glibc212}"
+
+if [[ ! -f "${DEFCONFIG}" ]]; then
+    echo "ERROR: defconfig not found: ${DEFCONFIG}" >&2
+    exit 1
+fi
+
+# 1. Ensure crosstool-ng + all macOS host dependencies are installed.
+# Per official ct-ng macOS setup: https://crosstool-ng.github.io/docs/os-setup/
+# Without these, ncurses build fails with "No rule to make target ../lib/libncurses.a"
+# because ct-ng's bundled ncurses build expects GNU coreutils / binutils / etc.
+if ! command -v brew >/dev/null 2>&1; then
+    echo "ERROR: Homebrew required on macOS host. Install: https://brew.sh" >&2
+    exit 1
+fi
+
+REQUIRED_BREW=(
+    crosstool-ng
+    autoconf automake bash binutils bison gawk
+    gettext gnu-sed gnu-tar help2man libtool
+    make ncurses readline texinfo wget xz zstd
+)
+
+for pkg in "${REQUIRED_BREW[@]}"; do
+    if ! brew list --formula "${pkg}" >/dev/null 2>&1; then
+        echo "Installing missing dep: ${pkg}"
+        brew install "${pkg}"
+    fi
+done
+hash -r
+
+# Per docs/os-setup: ct-ng's own ncurses build links against the brew-installed
+# ncurses headers/libs at compile time. Without these env vars set, ct-ng's
+# inner build picks up macOS BSD libs and the parallel-make race emerges.
+BREW_PREFIX="$(brew --prefix)"
+# PATH ordering rules:
+#   - GNU make/sed/tar/etc. FIRST so they win over macOS BSD versions.
+#     ncurses' Makefile uses GNU-make features for inter-subdir deps;
+#     BSD make handles them differently and the parallel build races.
+#   - bison FIRST (need new bison; macOS yacc is too old)
+#   - libtool gnubin FIRST (need GNU libtool not BSD)
+#   - System PATH next (so macOS /usr/bin/ar wins; brew GNU ar breaks ncurses
+#     per ct-ng issue #1788 maintainer comment)
+#   - binutils LAST (fills in objcopy/objdump/readelf which macOS lacks,
+#     without overriding /usr/bin/ar)
+# /bin FIRST so `bash` resolves to /bin/bash (3.2, no CoreFoundation linkage).
+# This avoids the macOS fork-safety abort during ncurses configure (subshell
+# `(...)` in CF-linked process triggers SIGSEGV at fork). Brew's bash 5 links
+# CF; Apple's /bin/bash 3.2 predates CF and doesn't.
+# We pre-empt brew's bash this way; rest of PATH unchanged.
+export PATH="\
+/bin:/usr/bin:\
+${BREW_PREFIX}/opt/make/libexec/gnubin:\
+${BREW_PREFIX}/opt/gnu-sed/libexec/gnubin:\
+${BREW_PREFIX}/opt/gnu-tar/libexec/gnubin:\
+${BREW_PREFIX}/opt/bison/bin:\
+${BREW_PREFIX}/opt/libtool/libexec/gnubin:\
+${PATH}:\
+${BREW_PREFIX}/opt/binutils/bin"
+
+# Explicitly tell ct-ng to use /bin/bash, in case anything searches BASH env.
+export BASH=/bin/bash
+
+# CRITICAL on macOS 26: ct-ng unsets LANG before invoking ncurses' configure.
+# With LANG unset, gawk silently produces NO output for ncurses' mk-1st.awk
+# script (verified empirically: LANG unset → 1 byte output; LANG=C → 204 lines).
+# Without mk-1st.awk's output, ncurses/Makefile lacks the rule for libncurses.a
+# and the build fails with "make[2]: No rule to make target '../lib/libncurses.a'".
+# Setting LANG (any value works — C is safest) makes gawk produce correct output.
+export LANG=C
+export LC_ALL=C
+
+export LDFLAGS="-L${BREW_PREFIX}/opt/binutils/lib -L${BREW_PREFIX}/opt/bison/lib -L${BREW_PREFIX}/opt/ncurses/lib"
+export CPPFLAGS="-I${BREW_PREFIX}/opt/binutils/include -I${BREW_PREFIX}/opt/ncurses/include"
+export PKG_CONFIG_PATH="${BREW_PREFIX}/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+
+# CRITICAL on macOS: brew's bash 5.x links against CoreFoundation, which
+# triggers a fork-safety abort in subshells used by autoconf scripts:
+#   ( PATH=".;."; conftest.sh ) 2>&5
+#   The process has forked and you cannot use this CoreFoundation functionality
+#   safely. You MUST exec().
+# `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` only disables ObjC +initialize
+# safety, NOT CoreFoundation's fork check (different subsystem). The reliable
+# fix is to use Apple's pre-installed /bin/bash (3.2.57) which predates CF
+# linking. autoconf-generated configure scripts honor $CONFIG_SHELL.
+export CONFIG_SHELL=/bin/bash
+# Also try the (less reliable) ObjC env var as belt + suspenders.
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+
+if ! command -v ct-ng >/dev/null 2>&1; then
+    echo "ERROR: ct-ng installed but not on PATH." >&2
+    exit 1
+fi
+
+# Set up project-local copy of ct-ng with patched paths.sh (bash → /bin/bash).
+# Brew's installed ct-ng has /opt/homebrew/opt/bash/bin/bash hardcoded in its
+# paths.sh, and that bash links CoreFoundation, which triggers macOS 26's
+# fork-safety SIGSEGV in ncurses' configure subshells. We can't modify brew's
+# system file, so we mirror the install locally and patch the copy.
+CT_NG_LOCAL="${REPO_ROOT}/tmp/ct-ng-local"
+if [[ ! -x "${CT_NG_LOCAL}/ct-ng" ]]; then
+    BREW_CT="$(brew --prefix crosstool-ng)/Cellar/crosstool-ng/$(brew list --versions crosstool-ng | awk '{print $2}')"
+    if [[ -z "${BREW_CT}" || ! -d "${BREW_CT}" ]]; then
+        # Fallback: derive from installed prefix
+        BREW_CT="$(dirname "$(dirname "$(brew --prefix crosstool-ng)")")/Cellar/crosstool-ng/$(ls "$(dirname "$(dirname "$(brew --prefix crosstool-ng)")")/Cellar/crosstool-ng" | head -1)"
+    fi
+    echo "Mirroring ct-ng install ${BREW_CT} → ${CT_NG_LOCAL} ..."
+    mkdir -p "${CT_NG_LOCAL}"
+    cp -R "${BREW_CT}/share/crosstool-ng" "${CT_NG_LOCAL}/share"
+    cp -R "${BREW_CT}/libexec/crosstool-ng" "${CT_NG_LOCAL}/libexec"
+    # Patch bash path in mirrored paths.sh
+    sed -i.bak 's|^export bash="/opt/homebrew/opt/bash/bin/bash"|export bash="/bin/bash"|' \
+        "${CT_NG_LOCAL}/share/paths.sh"
+    rm -f "${CT_NG_LOCAL}/share/paths.sh.bak"
+    # Build a local wrapper that points CT_LIB_DIR / CT_LIBEXEC_DIR to mirror
+    sed \
+        -e "s|export CT_LIB_DIR:=.*|export CT_LIB_DIR:=${CT_NG_LOCAL}/share|" \
+        -e "s|export CT_LIBEXEC_DIR:=.*|export CT_LIBEXEC_DIR:=${CT_NG_LOCAL}/libexec|" \
+        "$(brew --prefix)/bin/ct-ng" > "${CT_NG_LOCAL}/ct-ng"
+    chmod +x "${CT_NG_LOCAL}/ct-ng"
+fi
+# Force use of local ct-ng for all subsequent calls.
+ct-ng() { "${CT_NG_LOCAL}/ct-ng" "$@"; }
+export -f ct-ng 2>/dev/null || true
+
+# NOTE: avoid `head -1` pipeline — it triggers SIGPIPE upstream which crashes
+# `set -e -o pipefail`. awk reads everything but prints only first line.
+CT_VERSION="$(ct-ng version 2>&1 | awk 'NR==1 {print $NF}')"
+echo "crosstool-ng version: ${CT_VERSION}"
+
+# Note: ct-ng 1.28 has no `list-versions` subcommand. We trust the defconfig's
+# version pins; if a version isn't supported, `ct-ng oldconfig` or the build
+# step will report it. The valid GCC versions live in
+# $(brew --prefix)/Cellar/crosstool-ng/${CT_VERSION}/share/crosstool-ng/config/cc/gcc.in
+GCC_PIN="$(awk -F'"' '/^CT_GCC_VERSION=/{print $2}' "${DEFCONFIG}")"
+if [[ -n "${GCC_PIN}" ]]; then
+    echo "  defconfig pins GCC ${GCC_PIN}"
+fi
+
+# 3. Set up a fresh work directory.
+# ct-ng requires case-sensitive FS (Linux kernel + glibc source have files
+# differing only by case). macOS APFS / HFS+ default = case-INsensitive, so
+# create a case-sensitive sparseimage if needed and remap WORK_DIR onto it.
+mkdir -p "${WORK_DIR}"
+touch "${WORK_DIR}/.cscheck-A" "${WORK_DIR}/.cscheck-a"
+CS_COUNT=$(find "${WORK_DIR}" -maxdepth 1 -name '.cscheck-*' | wc -l | tr -d ' ')
+rm -f "${WORK_DIR}/.cscheck-A" "${WORK_DIR}/.cscheck-a"
+
+PREFIX_BASE="${HOME}/x-tools"
+if [[ "${CS_COUNT}" -lt 2 ]]; then
+    VOLNAME="$(basename "${WORK_DIR}")"
+    SPARSE="${WORK_DIR%/*}/${VOLNAME}.sparseimage"
+    MOUNT_POINT="/Volumes/${VOLNAME}"
+
+    echo "WORK_DIR is on case-INsensitive FS; setting up case-sensitive sparseimage..."
+    if [[ ! -f "${SPARSE}" ]]; then
+        # NOTE: messense's working CI uses 'Case-sensitive Journaled HFS+'
+        # rather than 'Case-sensitive APFS'. APFS may interact badly with
+        # ncurses' parallel build (suspected). Match messense for safety.
+        hdiutil create -type SPARSE -size 30g -fs "Case-sensitive Journaled HFS+" \
+            -volname "${VOLNAME}" "${SPARSE%.sparseimage}" >/dev/null
+    fi
+
+    if ! mount | grep -q " on ${MOUNT_POINT} "; then
+        hdiutil attach "${SPARSE}" >/dev/null
+    fi
+
+    rmdir "${WORK_DIR}" 2>/dev/null || true
+    WORK_DIR="${MOUNT_POINT}/build"
+    PREFIX_BASE="${MOUNT_POINT}/x-tools"
+    mkdir -p "${WORK_DIR}" "${PREFIX_BASE}"
+
+    echo "  → WORK_DIR remapped to: ${WORK_DIR}"
+    echo "  → install prefix base:  ${PREFIX_BASE}"
+    echo "  → sparseimage:          ${SPARSE}"
+    echo "  → unmount when done:    hdiutil detach ${MOUNT_POINT}"
+fi
+
+# `ct-ng defconfig` is non-interactive (vs `oldconfig` which prompts on new
+# options). DEFCONFIG env var tells it which file to load.
+cd "${WORK_DIR}"
+DEFCONFIG="${DEFCONFIG}" ct-ng defconfig
+
+# Override CT_PREFIX_DIR to live on the case-sensitive volume (if any).
+# Both work dir AND install prefix must be case-sensitive — ct-ng checks both.
+# Use \${CT_TARGET} literal so ct-ng evaluates it at build time.
+# NOTE: BSD sed (`-i ''`) and GNU sed (`-i.bak`) have incompatible -i syntax.
+# Now that GNU sed is first in PATH (for ncurses build), use awk for portability.
+awk -v new="CT_PREFIX_DIR=\"${PREFIX_BASE}/\${CT_TARGET}\"" \
+    '/^CT_PREFIX_DIR=/{print new; next} 1' .config > .config.new \
+    && mv .config.new .config
+
+# 4. Build (3-4 hours on M1/M2 Mac).
+echo "===================="
+echo "ct-ng build starting in ${WORK_DIR}"
+echo "Expect ~3-4 hours on M1/M2 Mac, ~6+ on Intel."
+echo "Build log: ${WORK_DIR}/build.log"
+echo "===================="
+
+# Trap to always extract logs (success OR failure) into repo's tmp/ so they're
+# accessible even after sparseimage is unmounted. Easier than mounting + spelunking.
+LOG_OUTDIR="${REPO_ROOT}/tmp/last-build-logs"
+extract_logs() {
+    local rc=$?
+    rm -rf "${LOG_OUTDIR}"
+    mkdir -p "${LOG_OUTDIR}"
+    [[ -f "${WORK_DIR}/build.log" ]] && cp "${WORK_DIR}/build.log" "${LOG_OUTDIR}/build.log" 2>/dev/null
+    [[ -f "${WORK_DIR}/.config" ]] && cp "${WORK_DIR}/.config" "${LOG_OUTDIR}/.config" 2>/dev/null
+    # Per-component config.log (most useful for debugging configure failures):
+    find "${WORK_DIR}/.build" -name "config.log" 2>/dev/null | while read -r cfg; do
+        rel="${cfg#${WORK_DIR}/.build/}"
+        dest="${LOG_OUTDIR}/${rel}"
+        mkdir -p "$(dirname "${dest}")"
+        cp "${cfg}" "${dest}"
+    done
+    echo
+    echo "logs copied to ${LOG_OUTDIR}/ (accessible without re-mounting sparseimage)"
+    return $rc
+}
+trap extract_logs EXIT
+
+ct-ng build
+
+# 5. Verify the result.
+# Target triple is x86_64-centos6-linux-gnu (vendor="unknown" in defconfig).
+PREFIX="${PREFIX_BASE}/x86_64-centos6-linux-gnu"
+GCC_BIN="${PREFIX}/bin/x86_64-centos6-linux-gnu-gcc"
+
+if [[ ! -x "${GCC_BIN}" ]]; then
+    echo "ERROR: build finished but ${GCC_BIN} not found." >&2
+    echo "Check ${WORK_DIR}/build.log.bz2 for failure details." >&2
+    exit 1
+fi
+
+echo
+echo "✓ Toolchain installed at: ${PREFIX}"
+echo
+"${GCC_BIN}" --version | head -1
+echo "  sysroot: $("${GCC_BIN}" -print-sysroot)"
+
+LIBC_PATH="${PREFIX}/x86_64-centos6-linux-gnu/sysroot/lib/libc.so.6"
+if [[ -f "${LIBC_PATH}" ]]; then
+    echo
+    echo "  glibc symbol versions in sysroot libc (top 3):"
+    strings "${LIBC_PATH}" | grep '^GLIBC_' | sort -uV | tail -3 | sed 's/^/    /'
+fi
+
+echo
+echo "Use in your build:"
+echo "  export PATH=${PREFIX}/bin:\$PATH"
+echo "  CC=x86_64-centos6-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \\"
+echo "    go build ./cmd/sensor"

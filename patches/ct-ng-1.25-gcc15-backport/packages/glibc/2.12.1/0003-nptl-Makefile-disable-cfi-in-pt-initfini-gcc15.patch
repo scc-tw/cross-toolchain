@@ -1,0 +1,29 @@
+Disable async-unwind-tables when generating pt-initfini.s for nptl crti/crtn.
+
+This is the NPTL counterpart to 0002-csu-Makefile-disable-cfi-in-initfini-gcc15.
+NPTL has its OWN crti.S/crtn.S generation that mirrors csu's old approach:
+compile pt-initfini.c with -S, then sed-extract chunks delimited by
+@HEADER_ENDS / @_init_PROLOG_BEGINS / @TRAILER_BEGINS markers.
+
+GCC 15 emits .cfi_startproc / .cfi_endproc with positions that don't align
+with NPTL's marker layout, so sed produces invalid asm:
+
+    /tmp/cc...s: Error: open CFI at the end of file; missing .cfi_endproc directive
+    /tmp/cc...s:32: Error: .cfi_endproc without corresponding .cfi_startproc
+    make[3]: *** [Makefile:598: nptl/crti.o] Error 1
+
+Same fix as 0002 for csu: append `-fno-asynchronous-unwind-tables
+-fno-unwind-tables` to CFLAGS-pt-initfini.s in nptl/Makefile.
+
+--- a/nptl/Makefile	2010-05-04 00:00:00.000000000 +0000
++++ b/nptl/Makefile	2026-05-09 00:00:00.000000000 +0000
+@@ -341,7 +341,8 @@
+ extra-objs += $(crti-objs) $(crtn-objs)
+ omit-deps += crti crtn
+
+-CFLAGS-pt-initfini.s = -g0 -fPIC -fno-inline-functions $(fno-unit-at-a-time)
++CFLAGS-pt-initfini.s = -g0 -fPIC -fno-inline-functions $(fno-unit-at-a-time) \
++	-fno-asynchronous-unwind-tables -fno-unwind-tables
+ endif
+
+ CFLAGS-flockfile.c = -D_IO_MTSAFE_IO

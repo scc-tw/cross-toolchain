@@ -1,0 +1,28 @@
+Remove the bogus `#define fdopen(fd,mode) NULL` redefinition.
+
+On modern macOS (TARGET_OS_MAC defined via TargetConditionals.h), zlib 1.2.12's
+zutil.h activates a Mac OS Classic-era (System 7-9) workaround that #defines
+fdopen to NULL. When stdio.h gets included later (by gzguts.h), Apple's
+prototype expands as `FILE *NULL(int, const char *)`, which is syntactically
+invalid and the build aborts with:
+
+    _stdio.h:322:7: error: expected identifier or '('
+        FILE *fdopen(int, const char *) __DARWIN_ALIAS_STARTING(...)
+
+Modern macOS (Darwin/POSIX) provides fdopen via stdio.h, so the placeholder
+isn't needed. Fixed in zlib 1.2.13 by excluding __APPLE__ from the condition;
+we just delete the offending define.
+
+--- a/zutil.h	2022-03-26 11:30:00.000000000 -0700
++++ b/zutil.h	2026-05-08 10:30:00.000000000 -0700
+@@ -144,9 +144,7 @@
+ #    if defined(__MWERKS__) && __dest_os != __be_os && __dest_os != __win32_os
+ #      include <unix.h> /* for fdopen */
+ #    else
+-#      ifndef fdopen
+-#        define fdopen(fd,mode) NULL /* No fdopen() */
+-#      endif
++       /* fdopen is provided by Apple stdio.h on modern macOS */
+ #    endif
+ #  endif
+ #endif

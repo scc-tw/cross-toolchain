@@ -1,0 +1,44 @@
+Disable async-unwind-tables when generating initfini.s for crti/crtn build.
+
+glibc 2.12.1 builds csu/crti.S and csu/crtn.S by compiling csu/initfini.c
+with -S to produce initfini.s, then `sed`ing that asm to extract chunks
+delimited by `@HEADER_ENDS`, `@_init_PROLOG_BEGINS`, `@_init_EPILOG_ENDS`
+etc markers. The resulting crti.S / crtn.S are then assembled with
+`as` to produce crti.o / crtn.o.
+
+GCC 15 emits .cfi_startproc / .cfi_endproc directives around any function
+that may unwind (default behavior, on by default at any optimization level
+and even with -g0), regardless of whether the user requested debug info.
+The sed extraction does NOT walk these CFI markers — it cuts based purely
+on the `@*_BEGINS`/`@*_ENDS` markers in initfini.c. With GCC 15's emission
+order, sed slices in the middle of a function:
+
+  - crti.S contains an open .cfi_startproc with no matching .cfi_endproc
+  - crtn.S contains a stray .cfi_endproc with no preceding .cfi_startproc
+
+then `as` rejects both files:
+
+    /tmp/cc...s:34: Error: CFI instruction used without previous .cfi_startproc
+    /tmp/cc...s:36: Error: .cfi_endproc without corresponding .cfi_startproc
+    /tmp/cc...s: Error: open CFI at the end of file; missing .cfi_endproc directive
+
+The fix in newer glibc (≥ 2.16 + various downstream patches) is to add
+`-fno-asynchronous-unwind-tables -fno-unwind-tables` to CFLAGS-initfini.s,
+which suppresses CFI directive emission entirely. The sed-extracted crti.S
+/ crtn.S then contain clean asm with no orphan CFI tags, and `as` accepts.
+
+This affects both i386 (-m32) and x86_64 paths, but typically only the
+i386 multilib hits it because the x86_64 csu/start.S follows a different
+build path that bypasses initfini.c.
+
+--- a/csu/Makefile	2010-05-04 00:00:00.000000000 +0000
++++ b/csu/Makefile	2026-05-09 00:00:00.000000000 +0000
+@@ -93,7 +93,8 @@ omit-deps += $(crtstuff)
+ $(crtstuff:%=$(objpfx)%.o): %.o: %.S $(objpfx)defs.h
+ 	$(compile.S) -g0 $(ASFLAGS-.os) -o $@
+
+-CFLAGS-initfini.s = -g0 -fPIC -fno-inline-functions $(fno-unit-at-a-time)
++CFLAGS-initfini.s = -g0 -fPIC -fno-inline-functions $(fno-unit-at-a-time) \
++	-fno-asynchronous-unwind-tables -fno-unwind-tables
+
+ vpath initfini.c $(sysdirs)

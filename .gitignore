@@ -1,0 +1,54 @@
+# =============================================================================
+# cross-toolchain repo .gitignore
+# =============================================================================
+
+# --- ct-ng artifacts (if invoked directly inside repo, normally goes to /tmp) ---
+.build/
+.config
+.config.old
+build.log*
+
+# --- image build outputs (large binary tarballs, regenerable) ---
+# dist/*.tar.xz are produced by Phase 1/2/3/4 builder images. Final consumer
+# image is at hub.docker.com/r/leavevm0cl6/cross-toolchain.
+dist/
+
+# --- macOS SDK tarball (large, license-restricted) ---
+# Phase 3 needs MacOSX11.3.sdk.tar.xz from joseluisq/macosx-sdks (~1.6 GB).
+# Download separately, see Dockerfile.phase3 header for instructions.
+vendor/MacOSX*.sdk.tar.xz
+
+# --- ct-ng / docker run output dirs ---
+_logs/
+_out/
+last-build-logs*/
+gcc14-wrappers/
+
+# --- macOS / OS noise ---
+.DS_Store
+.fseventsd
+
+# --- editor noise ---
+*.swp
+*~
+.idea/
+.vscode/
+.claude/
+
+# --- smoke-test output (binaries produced by toolchain tests) ---
+smoke-test/out/
+smoke-test/leveldb/
+smoke-test/src/
+smoke-test/sqlite.zip
+smoke-test/*.tar.gz
+
+# --- legacy build leftovers ---
+configs/_legacy/.config
+configs/_legacy/.build/
+
+# --- accidental ct-ng PREFIX_DIR_RO extracted toolchains ---
+/aarch64-*-linux-gnu/
+/x86_64-*-linux-gnu/
+/dist/aarch64-*-linux-gnu/
+/dist/x86_64-*-linux-gnu/
+/dist/osxcross/

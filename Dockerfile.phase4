@@ -1,0 +1,112 @@
+# syntax=docker/dockerfile:1.7
+# capsule8 cross-toolchain builder image — Phase 4
+#
+# Phase 4: ct-ng 1.28 (no backport) → x86_64-centos7-linux-gnu
+#         glibc 2.17 + GCC 15.2.0 + kernel 3.10.108 + binutils 2.42 + gdb 16.3
+#
+# Phase 4 vs Phase 2:
+#   - Same ct-ng 1.28, same versions, same Dockerfile structure
+#   - Only difference: target arch is x86_64 instead of aarch64
+#   - Same builder host platform (--platform=linux/arm64) → cross-gcc binary
+#     itself is arm64 ELF that emits x86_64 Linux ELF. Pairs with Phase 2's
+#     aarch64-host/aarch64-target gcc → both run natively in the
+#     cross-toolchain:latest image (arm64).
+#
+# Phase 4 vs Phase 1 (also x86_64 Linux target):
+#   - Phase 1: CentOS 6 era (glibc 2.12, kernel 2.6.32, multilib, ct-ng 1.25 + backports)
+#   - Phase 4: CentOS 7 era (glibc 2.17, kernel 3.10.108, no multilib, ct-ng 1.28 native)
+#   - Phase 1 binaries: deploy from CentOS 6 onwards. No eBPF (kernel too old).
+#   - Phase 4 binaries: deploy from CentOS 7 / RHEL 8 / Ubuntu 18.04 onwards.
+#     glibc 2.17 floor lets libbpf-dependent code link cleanly (libbpf needs
+#     glibc symbols newer than 2.12).
+#
+# Workflow matches Phase 1/2 (shares scripts/docker-build-target.sh):
+#   docker build --platform=linux/arm64 -t finalfantasyliu/cross-toolbox:phase4 \
+#                -f toolchain/Dockerfile.phase4 toolchain/
+#   docker run --rm --platform=linux/arm64 \
+#       -v /Volumes/capsule8-xtools:/opt/x-tools \
+#       -v "$PWD/_logs:/build" \
+#       finalfantasyliu/cross-toolbox:phase4 \
+#       x86_64-centos7-glibc217-gcc15
+
+FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Apt deps identical to Phase 2 (matching layer hash → Docker reuses Phase 2's
+# cache layer if both have been built locally)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        bison \
+        build-essential \
+        bzip2 \
+        ca-certificates \
+        curl \
+        file \
+        flex \
+        gawk \
+        gettext \
+        git \
+        gperf \
+        help2man \
+        libncurses-dev \
+        libtool \
+        libtool-bin \
+        m4 \
+        make \
+        patch \
+        perl \
+        pkg-config \
+        python3 \
+        python3-dev \
+        rsync \
+        sed \
+        texinfo \
+        unzip \
+        wget \
+        xz-utils \
+        zip \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root build user (ct-ng aborts if root). Same uid/gid as Phase 1/2 → cache hit
+RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
+    userdel -r ubuntu && \
+    groupadd -g 1000 ctuser && \
+    useradd -u 1000 -g 1000 -m -s /bin/bash ctuser && \
+    mkdir -p /opt/x-tools /opt/ct-ng-1.28 /build && \
+    chown -R ctuser:ctuser /opt/x-tools /opt/ct-ng-1.28 /build
+
+COPY --chown=ctuser:ctuser vendor/ct-ng-1.28.0-release.tar.xz /tmp/
+COPY --chown=ctuser:ctuser configs/ /configs/
+
+USER ctuser
+WORKDIR /tmp
+
+# Build ct-ng 1.28 from source — 0 patches
+RUN set -eux; \
+    cd /tmp; \
+    tar xJf ct-ng-1.28.0-release.tar.xz; \
+    cd crosstool-ng-1.28.0; \
+    ./configure --prefix=/opt/ct-ng-1.28; \
+    make -j"$(nproc)"; \
+    make install; \
+    cd /tmp; rm -rf crosstool-ng-1.28.0 ct-ng-1.28.0-release.tar.xz; \
+    /opt/ct-ng-1.28/bin/ct-ng version 2>&1 | awk 'NR==1'; \
+    /opt/ct-ng-1.28/bin/ct-ng list-versions GCC 2>/dev/null | grep "15.2.0" || true; \
+    /opt/ct-ng-1.28/bin/ct-ng list-versions GLIBC 2>/dev/null | grep "2.17" || true
+
+USER root
+ENV PATH=/opt/ct-ng-1.28/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+COPY --chmod=755 scripts/docker-build-target.sh /usr/local/bin/docker-build-target.sh
+
+USER ctuser
+WORKDIR /build
+
+ENTRYPOINT ["/usr/local/bin/docker-build-target.sh"]

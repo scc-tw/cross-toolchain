@@ -1,0 +1,126 @@
+# Crosstool-ng defconfig — capsule8 / reference cross-compilation toolchain.
+#
+# Target:  x86_64-linux-gnu, glibc 2.12 (CentOS 6 / RHEL 6 floor)
+# Host:    macOS arm64 (Apple Silicon); also works on macOS x86_64 / Linux
+# GCC:     15.2.0 (ct-ng 1.28 ceiling; 16 requires ct-ng 1.29+ or master)
+# Build:   bash toolchain/build.sh
+# Output:  ~/x-tools/x86_64-linux-gnu/
+# Time:    ~3-4 hours on M1/M2 Mac arm64
+
+CT_CONFIG_VERSION="4"
+
+# === Toolchain target ===
+# Match reference's tuple exactly: x86_64-centos6-linux-gnu.
+CT_ARCH_X86=y
+CT_ARCH_64=y
+CT_TARGET_VENDOR="centos6"
+
+# macOS arm64 host requires this — without it config.guess can't identify
+# Apple Silicon and the build aborts in companion-libs phase.
+CT_OVERRIDE_CONFIG_GUESS_SUB=y
+
+# === Install location ===
+CT_PREFIX_DIR="${HOME}/x-tools/${CT_TARGET}"
+
+# === Linux kernel headers ===
+# CentOS 6 era kernel. BPF programs build in a separate modern container,
+# so this toolchain doesn't need bleeding-edge UAPI.
+CT_KERNEL_LINUX=y
+CT_LINUX_VERSION="3.10.108"
+
+# === C library: glibc 2.12 (CentOS 6 ABI floor) ===
+CT_LIBC_GLIBC=y
+CT_GLIBC_VERSION="2.12.2"
+CT_THREADS="nptl"
+CT_GLIBC_KERNEL_VERSION_NONE=y
+CT_GLIBC_FORCE_UNWIND=y
+CT_GLIBC_BUILD_SSP=y
+CT_GLIBC_SSP_DEFAULT=y
+
+# Sunrpc headers (rpc/*.h). Some legacy enterprise C SDKs still need it
+# (Bitdefender SDK is one candidate). Glibc 2.26+ moved this to libtirpc.
+CT_GLIBC_ENABLE_OBSOLETE_RPC=y
+
+# Workaround: GCC 15 warns on patterns in glibc 2.12 source that were
+# idiomatic in 2010. Glibc's build defaults to -Werror so each warning
+# breaks the build. Each -Wno-* below silences a known false positive.
+# These flags ONLY apply to the glibc bootstrap step inside ct-ng — they
+# do NOT affect compilation of user code with the resulting toolchain.
+CT_GLIBC_EXTRA_CFLAGS="-Wno-array-bounds -Wno-array-parameter -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-missing-attributes -Wno-error"
+
+# === Binutils ===
+# Pinned at 2.40 (not latest 2.45). 2.44+ removed gold linker and tightened
+# things in ways that break glibc 2.12. 2.40 is a known-good middle ground.
+CT_BINUTILS_VERSION="2.40"
+CT_BINUTILS_LINKER_LD=y
+CT_BINUTILS_LINKER_DEFAULT="bfd"
+CT_BINUTILS_FORCE_LD_BFD_DEFAULT=y
+CT_BINUTILS_PLUGINS=y
+CT_BINUTILS_DETERMINISTIC_ARCHIVES=y
+CT_BINUTILS_EXTRA_CONFIG_ARRAY="--with-system-zlib"
+
+# === C compiler (GCC) ===
+# 15.2.0 is ct-ng 1.28's max GCC. For GCC 16 use ct-ng master / 1.29.
+CT_CC_GCC=y
+CT_GCC_VERSION="15.2.0"
+CT_CC_LANG_C=y
+CT_CC_LANG_CXX=y
+CT_CC_GCC_LIBSTDCXX=y
+CT_CC_GCC_LIBSTDCXX_VERBOSE=m
+CT_CC_GCC_LIBQUADMATH=y
+CT_CC_GCC_LIBGOMP=y
+CT_CC_GCC_LIBSSP=y
+
+# libsanitizer references glibc 2.28+ internal symbols (e.g., __gettimeofday)
+# that don't exist in 2.12. Must disable to build. Trade-off: no
+# -fsanitize=address in this toolchain. cgo Go binaries don't need it.
+CT_CC_GCC_LIBSANITIZER=n
+
+CT_CC_GCC_USE_LTO=y
+CT_CC_GCC_USE_GRAPHITE=y
+CT_CC_GCC_ENABLE_TARGET_OPTSPACE=y
+CT_CC_GCC_SYSTEM_ZLIB=y
+CT_CC_GCC_USE_SYSROOTED_HEADERS=y
+CT_CC_GCC_BUILD_ID=y
+
+# Emit both SYSV (DT_HASH) and GNU (DT_GNU_HASH) symbol tables in dynamic
+# libs. CentOS 6 era ld.so falls back to SYSV when GNU is absent; modern
+# GCC defaults to GNU-only which old loaders can't read.
+CT_CC_GCC_LNK_HASH_STYLE_BOTH=y
+
+# === Companion libs (host-side GCC build deps) ===
+CT_GMP_VERSION="6.2.1"
+CT_MPFR_VERSION="4.2.2"
+CT_MPC_VERSION="1.3.1"
+CT_ISL_VERSION="0.26"
+
+
+# === Cross debugger ===
+CT_DEBUG_GDB=y
+CT_GDB_VERSION="14.2"
+CT_GDB_CROSS=y
+CT_GDB_CROSS_PYTHON=y
+CT_GDB_CROSS_PYTHON_BINARY="python3"
+CT_GDB_GDBSERVER_TOPLEVEL=y
+
+# === Companion tools — let ct-ng build its own GNU make ===
+# Without this, ct-ng uses whatever `make` is on PATH (macOS BSD make or
+# whatever brew has). messense's working config sets this; without it, the
+# ncurses companion-libs build hits a parallel race. Critical on macOS host.
+CT_COMP_TOOLS_MAKE=y
+
+# === Build-time hygiene ===
+CT_PARALLEL_JOBS=0
+CT_USE_PIPES=y
+CT_LOCAL_TARBALLS_DIR="${HOME}/.crosstool-ng-tarballs"
+CT_SAVE_TARBALLS=y
+CT_VERIFY_DOWNLOAD_DIGEST=y
+CT_VERIFY_DOWNLOAD_DIGEST_SHA512=y
+CT_LOG_EXTRA=y
+CT_LOG_LEVEL_MAX="EXTRA"
+CT_LOG_TO_FILE=y
+CT_LOG_FILE_COMPRESS=y
+CT_REMOVE_DOCS=y
+CT_INSTALL_LICENSES=y
+CT_STRIP_HOST_TOOLCHAIN_EXECUTABLES=y
+CT_RM_RF_PREFIX_DIR=y

@@ -1,0 +1,70 @@
+Replace inline-asm __FD_ZERO with portable C version (GCC 15 compat).
+
+glibc 2.12.1 ships two arch-specific bits/select.h:
+  - sysdeps/i386/bits/select.h        (used in i386 builds AND, surprisingly,
+                                       installed for x86_64 multilib too)
+  - sysdeps/x86_64/bits/select.h      (has __WORDSIZE-conditional stosq/stosl)
+
+For our x86_64 + i386 multilib build, glibc's install picks i386's version
+to install in `<sysroot>/usr/include/bits/select.h`. We previously thought
+the x86_64 version was active and patched it, but the i386 version is
+the one that actually ends up in the sysroot — confirmed by inspecting
+the installed file's content (no __WORDSIZE switching, hardcoded "stosl").
+
+The asm in this file:
+    int __d0, __d1;                              /* 32-bit */
+    __asm__ __volatile__ ("cld; rep; stosl"
+                          : "=c" (__d0), "=D" (__d1)
+                          : "a" (0), "0" (sizeof (fd_set) / sizeof (__fd_mask)),
+                            "1" (&__FDS_BITS (fdsp)[0])
+                          : "memory");
+
+When this header is included by code being compiled FOR x86_64 (-m64 by
+default for our cross-toolchain), `&__FDS_BITS(...)[0]` is a 64-bit
+pointer but C variable `__d1` is declared `int` (32-bit). With `stosl`
+suffix `l` (32-bit) and `=D` constraint not specifying width, GCC 15's
+register allocator picks bindings that produce e.g. `movl ..., %rdx` —
+the assembler rejects this as size mismatch:
+
+    Error: incorrect register `%rdx' used with `l' suffix
+
+Hits readline `input.c` (FD_ZERO calls) and any other code using FD_ZERO.
+
+Fix: use #if 0 to skip the asm version, falling through to the existing
+portable C `for` loop in the same file's #else branch. Same change
+applied to sysdeps/x86_64/bits/select.h for safety (in case multilib
+selection differs across glibc configure paths).
+
+Performance: FD_ZERO is rarely a hot path. Loop with -O2 is essentially
+memset — GCC's optimizer recognizes the pattern.
+
+Reference: GCC inline asm operand constraints docs
+Reference: glibc 2.13+ rewrote this with __builtin_memset, then 2.34+
+           moved to a fully generic implementation removing asm
+
+--- a/sysdeps/i386/bits/select.h	2010-05-04 00:00:00.000000000 +0000
++++ b/sysdeps/i386/bits/select.h	2026-05-09 00:00:00.000000000 +0000
+@@ -22,7 +22,9 @@
+ #endif
+
+
+-#if defined __GNUC__ && __GNUC__ >= 2
++/* GCC 15+ register allocator triggers asm operand size mismatch on x86_64
++   multilib build. Force portable C version. */
++#if 0
+
+ # define __FD_ZERO(fdsp) \
+   do {									      \
+--- a/sysdeps/x86_64/bits/select.h	2010-05-04 00:00:00.000000000 +0000
++++ b/sysdeps/x86_64/bits/select.h	2026-05-09 00:00:00.000000000 +0000
+@@ -23,7 +23,9 @@
+ #include <bits/wordsize.h>
+
+
+-#if defined __GNUC__ && __GNUC__ >= 2
++/* GCC 15+ register allocator triggers asm operand size mismatch on x86_64
++   multilib build. Force portable C version. */
++#if 0
+
+ # if __WORDSIZE == 64
+ #  define __FD_ZERO_STOS "stosq"

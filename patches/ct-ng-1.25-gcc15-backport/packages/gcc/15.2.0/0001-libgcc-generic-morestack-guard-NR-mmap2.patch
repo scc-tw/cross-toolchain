@@ -1,0 +1,44 @@
+Tighten SYS_mmap2 detection in libgcc/generic-morestack.c.
+
+GCC 15.2's libgcc/generic-morestack.c uses:
+
+    #ifdef SYS_mmap2
+    #define MORESTACK_MMAP SYS_mmap2
+
+This relies on `#ifdef SYS_mmap2` to decide which syscall to use. On glibc
+2.12 x86_64, <bits/syscall.h> defines `SYS_mmap2` as `__NR_mmap2`, but the
+underlying `__NR_mmap2` is NOT provided by <asm/unistd_64.h> (it's an i386
+syscall). The chain becomes:
+
+    SYS_mmap2  → defined (macro)
+    → expands to __NR_mmap2
+    → __NR_mmap2 NOT defined for x86_64
+    → compile error: '__NR_mmap2' undeclared
+
+This breaks split-stack libgcc build for x86_64 cross-toolchains targeting
+glibc 2.12. (Newer glibc fixes its <bits/syscall.h> to be more careful, but
+2.12 is what we're stuck with.)
+
+Fix: require BOTH the SYS_-style macro AND the underlying __NR_-style number
+to be defined before using mmap2 path. Falls back to SYS_mmap when only the
+unified macro is "defined" but actually expands to something unavailable.
+
+This is a minimal, targeted fix. Upstream may eventually adopt a similar
+guard; until then we patch locally for the GCC 15 + glibc 2.12 combo.
+
+--- a/libgcc/generic-morestack.c	2025-08-15 00:00:00.000000000 +0000
++++ b/libgcc/generic-morestack.c	2026-05-09 00:00:00.000000000 +0000
+@@ -66,9 +66,11 @@
+
+ #include <sys/syscall.h>
+
+-#if defined(SYS_mmap) || defined(SYS_mmap2)
++/* Require __NR_mmap2 to be defined too — glibc 2.12 x86_64 defines
++   SYS_mmap2 unconditionally but doesn't supply __NR_mmap2.  */
++#if defined(SYS_mmap) || (defined(SYS_mmap2) && defined(__NR_mmap2))
+
+-#ifdef SYS_mmap2
++#if defined(SYS_mmap2) && defined(__NR_mmap2)
+ #define MORESTACK_MMAP SYS_mmap2
+ #define MORESTACK_ADJUST_OFFSET(x) ((x) / 4096ULL)
+ #else

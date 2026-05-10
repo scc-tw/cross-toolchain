@@ -1,0 +1,179 @@
+# syntax=docker/dockerfile:1.7
+# capsule8 cross-toolchain builder image — Phase 3 (osxcross)
+#
+# Phase 3 produces: cross-clang targeting macOS
+#   - x86_64-apple-darwin20.4-clang  (Intel macOS, deploy floor 10.15 Catalina)
+#   - arm64-apple-darwin20.4-clang   (Apple Silicon, deploy floor 11.0 Big Sur)
+#   - aarch64-apple-darwin20.4-clang (autotools-friendly symlink for arm64)
+#
+# Multi-stage build (5/10):
+#   - builder stage: full apt deps + git clone osxcross source + run build.sh
+#                    → /opt/osxcross fully installed.
+#                    Intermediate build tree ~5 GB lives here, isolated from
+#                    the final image so it doesn't pollute output.
+#   - final stage:   fresh from ubuntu:24.04, only runtime apt deps
+#                    (clang/lld/libxml2). COPY --from=builder /opt/osxcross.
+#                    Result: ~2 GB final image (vs 7.4 GB without multi-stage).
+#
+# osxcross commit pinned (5/10):
+#   pinned to e6ab3fa7423f9235ce9ed6381d6d3af191b46b59
+#   (osxcross master HEAD on 2025-12-15)
+#   Reason: `master` is a moving ref, follows upstream pushes. Pin a hash to
+#   guarantee reproducibility. See docker_experiments.md §3.9c.
+#
+# Workflow differs from Phase 1/2:
+#   Phase 1/2: docker build → image (ct-ng generator) → docker run → ct-ng → toolchain
+#   Phase 3:   docker build → image (toolchain itself) → docker run → compile your source
+#   Reason: osxcross IS the cross-toolchain, not a generator.
+#
+# Usage:
+#   # Build the image (~30-50 min; the builder stage runs build.sh)
+#   docker build --platform=linux/arm64 -t finalfantasyliu/cross-toolbox:phase3 \
+#                -f toolchain/Dockerfile.phase3 toolchain/
+#
+#   # Compile a macOS Intel binary
+#   docker run --rm --platform=linux/arm64 -v "$PWD:/work" finalfantasyliu/cross-toolbox:phase3 \
+#       x86_64-apple-darwin20.4-clang -mmacos-version-min=10.15 hello.c -o hello-intel
+#
+#   # Export the entire toolchain
+#   docker run --rm --platform=linux/arm64 finalfantasyliu/cross-toolbox:phase3 \
+#       tar -cJf - -C /opt/osxcross . > dist/osxcross-MacOSX11.3.tar.xz
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: builder
+# ─────────────────────────────────────────────────────────────────────────────
+FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+
+# bash + -e + pipefail (hadolint DL4006)
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Build-time deps (only present in this builder stage; do not affect final image)
+# - clang/lld/llvm-dev: native compiler + wrapper LLVM library
+# - cmake/make/python3: build infrastructure
+# - libxml2-dev/libssl-dev/libbz2-dev/liblzma-dev/zlib1g-dev: libtapi/cctools-port deps
+# - cpio/uuid-dev: extras used by cctools-port
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        bzip2 \
+        ca-certificates \
+        clang \
+        cmake \
+        cpio \
+        curl \
+        file \
+        git \
+        libbz2-dev \
+        liblzma-dev \
+        libssl-dev \
+        libxml2-dev \
+        lld \
+        llvm-dev \
+        make \
+        patch \
+        python3 \
+        uuid-dev \
+        xz-utils \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root build user — uid 1000, gid 100 (users); aligned with the dev user
+# in the final stage.
+RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
+    userdel -r ubuntu && \
+    useradd -u 1000 -g 100 -m -s /bin/bash xuser && \
+    mkdir -p /opt/osxcross && \
+    chown -R xuser:users /opt/osxcross
+
+COPY --chown=xuser:users vendor/MacOSX11.3.sdk.tar.xz /tmp/
+
+USER xuser
+WORKDIR /tmp
+
+# osxcross commit (pinned 5/10) — see docker_experiments.md §3.9c for rationale
+ARG OSXCROSS_COMMIT=e6ab3fa7423f9235ce9ed6381d6d3af191b46b59
+
+ENV TARGET_DIR=/opt/osxcross \
+    SDK_VERSION=11.3 \
+    OSX_VERSION_MIN=10.15 \
+    ENABLE_ARCHS="x86_64 arm64" \
+    UNATTENDED=1
+
+# Run git clone + extract SDK + build.sh + build_compiler_rt.sh + cleanup all
+# in ONE RUN. Splitting them across multiple RUNs would leave intermediate
+# build artifacts permanently in earlier layers (Docker layers stack — `rm`
+# in a later layer cannot reclaim bytes from earlier ones).
+# By cleaning up in the same RUN, this layer contains only the final result
+# (~1.1 GB) and not the build intermediates (~5 GB).
+RUN set -eu; \
+    git clone https://github.com/tpoechtrager/osxcross.git osxcross; \
+    cd osxcross; \
+    git checkout "${OSXCROSS_COMMIT}"; \
+    git rev-parse HEAD > /opt/osxcross/PINNED_COMMIT.txt; \
+    cp /tmp/MacOSX11.3.sdk.tar.xz tarballs/; \
+    \
+    JOBS=$(nproc) ./build.sh; \
+    \
+    PATH=/opt/osxcross/bin:$PATH JOBS=$(nproc) ./build_compiler_rt.sh; \
+    \
+    cd /; \
+    rm -rf /tmp/osxcross /tmp/MacOSX11.3.sdk.tar.xz; \
+    \
+    /opt/osxcross/bin/x86_64-apple-darwin20.4-clang --version | head -1; \
+    /opt/osxcross/bin/arm64-apple-darwin20.4-clang  --version | head -1; \
+    du -sh /opt/osxcross
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: final image (what users actually `docker run`)
+# ─────────────────────────────────────────────────────────────────────────────
+FROM --platform=linux/arm64 ubuntu:24.04 AS final
+
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+# OCI image metadata (org.opencontainers.image.* is the industry-standard namespace)
+LABEL org.opencontainers.image.title="cross-toolbox-phase3" \
+      org.opencontainers.image.description="osxcross builder image (clang 18 + Apple SDK 11.3) producing macOS Intel + Apple Silicon cross-clang" \
+      org.opencontainers.image.licenses="GPL-3.0" \
+      org.opencontainers.image.authors="finalfantasyliu" \
+      org.opencontainers.image.vendor="finalfantasyliu" \
+      org.opencontainers.image.version="1.0.0"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Runtime-only apt deps (vs builder's full dev deps)
+# - clang: native compiler invoked by the wrapper
+# - lld: used in some macOS arm64 link paths
+# - libxml2: libtapi runtime dep (TBD parsing)
+# - We exclude libxml2-dev/llvm-dev/cmake/git etc. (build-only) to save ~1 GB
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        clang \
+        libxml2 \
+        lld \
+        make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Same dev user (uid/gid aligned with the builder stage)
+RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
+    userdel -r ubuntu && \
+    useradd -u 1000 -g 100 -m -s /bin/bash xuser && \
+    mkdir -p /work && \
+    chown -R xuser:users /work
+
+# ★ Key multi-stage step: copy /opt/osxcross from the builder into the final stage.
+# Only the final product (~1.1 GB) is copied; the builder's intermediate tree
+# (~5 GB) stays in the builder layer and never enters the final image.
+COPY --from=builder --chown=xuser:users /opt/osxcross /opt/osxcross
+
+ENV PATH=/opt/osxcross/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+USER xuser
+WORKDIR /work
+
+ENTRYPOINT ["/bin/bash"]

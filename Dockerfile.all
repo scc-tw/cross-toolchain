@@ -1,0 +1,489 @@
+# syntax=docker/dockerfile:1.7
+# finalfantasyliu/cross-toolchain — unified cross-toolchain image
+#
+# One image, 4 cross-compilation targets + Go 1.22.12. Product image is named
+# `cross-toolchain` (vs. builder images named `cross-toolbox:phase1/2/3`).
+# Naming convention follows survey of dockcross + multiarch/crossbuild (5/9).
+#
+# Targets baked in:
+#   - x86_64-centos6-linux-gnu  (CentOS 6+ Intel,    glibc 2.12, GCC 15.2, multilib)
+#   - x86_64-centos7-linux-gnu  (CentOS 7+ Intel,    glibc 2.17, GCC 15.2)
+#   - aarch64-centos7-linux-gnu (CentOS 7+ ARM64,    glibc 2.17, GCC 15.2)
+#   - x86_64-apple-darwin20.4   (macOS 10.15+ Intel, clang 18 + SDK 11.3)
+#   - arm64-apple-darwin20.4    (macOS 11.0+ Apple Silicon, clang 18 + SDK 11.3)
+#
+# Plus:
+#   - Go 1.22.12 — the only Go version that simultaneously covers
+#     CentOS 6 (Linux 2.6.32) and macOS 10.15.
+#     (Go 1.23 dropped macOS 10.15; Go 1.24 raised kernel floor to 3.2.)
+#     Generics ✓ (since 1.18), slog ✓ (since 1.21), loop scoping fix ✓ (1.22).
+#
+# Layout (survey 5/9 — dockcross + multiarch/crossbuild + crazy-max/osxcross):
+#   /opt/x-tools/<triple>/    Linux toolchains (ct-ng install convention)
+#   /opt/osxcross/            macOS toolchain (osxcross install convention)
+#   /usr/local/go/            Go 1.22.12
+#   /usr/local/bin/           autotools-friendly symlinks
+#                              (e.g. aarch64-linux-gnu-gcc → aarch64-centos7-linux-gnu-gcc)
+#
+# User / permission model (survey 5/9 — dockcross gosu pattern):
+#   build-time:  create dev user (uid 1000, gid 100)
+#   runtime entrypoint: read HOST_UID/HOST_GID env, dynamically usermod,
+#                       then gosu to dev. Result: bind-mounted files end up
+#                       owned by the host user, no root-owned files leftover.
+#
+# Usage (macOS Apple Silicon host + OrbStack):
+#   docker build -t finalfantasyliu/cross-toolchain:latest \
+#       -f toolchain/Dockerfile.all toolchain/
+#
+#   # Cross-compile a binary; output owned by the host user
+#   docker run --rm \
+#       -e HOST_UID=$(id -u) -e HOST_GID=$(id -g) \
+#       -v "$PWD:/work" \
+#       finalfantasyliu/cross-toolchain:latest \
+#       x86_64-centos6-linux-gnu-gcc -static-libstdc++ -static-libgcc app.cpp -o app
+#
+#   # Go cross-compile (CGO with cross-gcc)
+#   docker run --rm \
+#       -e HOST_UID=$(id -u) -e HOST_GID=$(id -g) \
+#       -v "$PWD:/work" \
+#       finalfantasyliu/cross-toolchain:latest \
+#       bash -c 'CC=x86_64-centos6-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build .'
+#
+#   # Interactive shell
+#   docker run --rm -it \
+#       -e HOST_UID=$(id -u) -e HOST_GID=$(id -g) \
+#       -v "$PWD:/work" \
+#       finalfantasyliu/cross-toolchain:latest
+#
+# Image size estimate: ~4.3 GB
+#   base ubuntu                 ~108 MB
+#   apt runtime                 ~1.2 GB
+#   x86_64-centos6 toolchain    ~462 MB
+#   x86_64-centos7 toolchain    ~365 MB
+#   aarch64-centos7 toolchain   ~382 MB
+#   osxcross                    ~1.1 GB
+#   Go 1.22                     ~250 MB
+#   gosu/sudo                   <5 MB
+
+FROM --platform=linux/arm64 ubuntu:24.04
+
+# Run RUN commands under bash with: bashism ([[ ]]) + -e (any error fails) +
+# pipefail (failure mid-pipe also fails). pipefail follows hadolint DL4006:
+# avoids `cmd | tee log` succeeding silently when cmd fails but tee returns 0.
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+# OCI image metadata (org.opencontainers.image.* is the industry-standard namespace).
+# We omit `source` and `documentation` to avoid exposing personal repo / docs URLs.
+LABEL org.opencontainers.image.title="cross-toolchain" \
+      org.opencontainers.image.description="5 cross-toolchains (CentOS 6 x86_64, CentOS 7 x86_64, CentOS 7 aarch64, macOS Intel, macOS Apple Silicon) + Go 1.22.12 in one container" \
+      org.opencontainers.image.licenses="GPL-3.0" \
+      org.opencontainers.image.authors="finalfantasyliu" \
+      org.opencontainers.image.vendor="finalfantasyliu" \
+      org.opencontainers.image.version="1.0.0"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# Runtime helpers + osxcross runtime deps + gosu/sudo for entrypoint user switching
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        bzip2 \
+        ca-certificates \
+        clang \
+        cmake \
+        curl \
+        file \
+        git \
+        gosu \
+        less \
+        libxml2 \
+        lld \
+        make \
+        ninja-build \
+        patch \
+        pkg-config \
+        python3 \
+        rsync \
+        sudo \
+        vim-tiny \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root dev user (uid 1000 = host user convention → bind-mount perms align).
+# Add to sudo group with NOPASSWD so dev can run ad-hoc apt install (dockcross convention).
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -u 1000 -g 100 -m -s /bin/bash dev && \
+    usermod -aG sudo dev && \
+    echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev && \
+    mkdir -p /opt/x-tools /opt/osxcross /work && \
+    chown -R dev:users /opt/x-tools /opt/osxcross /work && \
+    \
+    # Strip the default Ubuntu MOTD ("To run a command as administrator..."),
+    # which would overlap with our own banner.
+    rm -f /etc/update-motd.d/* /etc/legal && \
+    : > /etc/motd
+
+# COPY tarballs (built by phase 1/2/3/4 builder images and tar'd into dist/)
+# x86_64-centos6-extras: overlay providing libelf.a + libz.a + libzstd.a +
+# cherry-pick UAPI headers + extras-compat.h + pre-built libbpf.a (master HEAD).
+# This lets a Phase 1 binary statically link libbpf without touching Phase 1's
+# read-only sysroot. Final binary's GLIBC ABI floor is preserved at 2.12.
+COPY --chown=dev:users \
+    dist/x86_64-centos6-linux-gnu.tar.xz \
+    dist/x86_64-centos7-linux-gnu.tar.xz \
+    dist/aarch64-centos7-linux-gnu.tar.xz \
+    dist/osxcross-MacOSX11.3.tar.xz \
+    dist/x86_64-centos6-extras.tar.xz \
+    /tmp/
+
+WORKDIR /tmp
+
+# Mkdir the extras parent before tar extracts into it; chown so dev user can write.
+RUN mkdir -p /opt/x-tools-extras && chown dev:users /opt/x-tools-extras
+
+# Extract the four toolchains to their canonical paths.
+# Must run as root: tarballs include ct-ng's read-only dirs (PREFIX_DIR_RO);
+# extracting hardlinks into them would fail under a non-root user.
+# --delay-directory-restore ensures dir permissions are set last.
+RUN set -eux; \
+    tar --delay-directory-restore -xJf x86_64-centos6-linux-gnu.tar.xz  -C /opt/x-tools/; \
+    tar --delay-directory-restore -xJf x86_64-centos7-linux-gnu.tar.xz  -C /opt/x-tools/; \
+    tar --delay-directory-restore -xJf aarch64-centos7-linux-gnu.tar.xz -C /opt/x-tools/; \
+    tar --delay-directory-restore -xJf osxcross-MacOSX11.3.tar.xz       -C /opt/; \
+    tar -xJf x86_64-centos6-extras.tar.xz -C /opt/x-tools-extras/; \
+    rm -f /tmp/*.tar.xz; \
+    \
+    # Sanity: each toolchain reports a version string
+    echo "=== verifying toolchains ==="; \
+    /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-gcc --version | head -1; \
+    /opt/x-tools/x86_64-centos7-linux-gnu/bin/x86_64-centos7-linux-gnu-gcc --version | head -1; \
+    /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-gcc --version | head -1; \
+    /opt/osxcross/bin/x86_64-apple-darwin20.4-clang --version | head -1; \
+    \
+    # Sanity: extras layout
+    echo "=== verifying Phase 1 extras ==="; \
+    test -f /opt/x-tools-extras/x86_64-centos6-extras/lib64/libbpf.a 2>/dev/null \
+       || test -f /opt/x-tools-extras/x86_64-centos6-extras/libbpf-built/libbpf.a; \
+    test -f /opt/x-tools-extras/x86_64-centos6-extras/lib64/libelf.a; \
+    ls -lh /opt/x-tools-extras/x86_64-centos6-extras/lib64/*.a
+
+# Install Go 1.22.12 (last Go version covering both CentOS 6 + macOS 10.15).
+# Image base is linux/arm64, so download the arm64 Go tarball.
+# SHA256 from https://go.dev/dl/?mode=json&include=all
+ARG GO_VERSION=1.22.12
+ARG GO_SHA256_ARM64=fd017e647ec28525e86ae8203236e0653242722a7436929b1f775744e26278e7
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz"; \
+    echo "${GO_SHA256_ARM64}  go${GO_VERSION}.linux-arm64.tar.gz" | sha256sum -c -; \
+    tar -C /usr/local -xzf "go${GO_VERSION}.linux-arm64.tar.gz"; \
+    rm -f /tmp/go*.tar.gz; \
+    /usr/local/go/bin/go version
+
+# Autotools-friendly symlinks. autoconf's config.sub recognizes
+# aarch64-linux-gnu / x86_64-linux-gnu, but not -centos6/-centos7. These
+# alias links let `./configure --host=aarch64-linux-gnu` work.
+# Uses [[ ]] because SHELL is set to bash above.
+RUN set -eux; \
+    cd /usr/local/bin; \
+    for tool in gcc g++ ar ranlib strip ld nm objcopy objdump readelf addr2line c++ cc cpp gcov; do \
+        if [[ -x /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-${tool} ]]; then \
+            ln -sf /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-${tool} \
+                x86_64-linux-gnu-${tool}; \
+        fi; \
+        if [[ -x /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-${tool} ]]; then \
+            ln -sf /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-${tool} \
+                aarch64-linux-gnu-${tool}; \
+        fi; \
+    done; \
+    ls /usr/local/bin/*linux-gnu-gcc
+
+# Copy entrypoint script
+COPY --chmod=755 scripts/cross-toolchain-entrypoint.sh /usr/local/bin/cross-toolchain-entrypoint.sh
+
+# PATH: prepend all toolchain bin dirs + Go bin.
+# Order: user-local symlinks → Linux toolchains → osxcross → Go → system
+ENV PATH=/usr/local/sbin:/usr/local/bin:\
+/opt/x-tools/x86_64-centos6-linux-gnu/bin:\
+/opt/x-tools/x86_64-centos7-linux-gnu/bin:\
+/opt/x-tools/aarch64-centos7-linux-gnu/bin:\
+/opt/osxcross/bin:\
+/usr/local/go/bin:\
+/usr/sbin:/usr/bin:/sbin:/bin
+
+# Per-target convenience env vars (we don't set CC/CXX — none of the 5 targets
+# would be a sane default).
+ENV X86_64_CENTOS6_CC=x86_64-centos6-linux-gnu-gcc \
+    X86_64_CENTOS6_CXX=x86_64-centos6-linux-gnu-g++ \
+    X86_64_CENTOS7_CC=x86_64-centos7-linux-gnu-gcc \
+    X86_64_CENTOS7_CXX=x86_64-centos7-linux-gnu-g++ \
+    AARCH64_CENTOS7_CC=aarch64-centos7-linux-gnu-gcc \
+    AARCH64_CENTOS7_CXX=aarch64-centos7-linux-gnu-g++ \
+    DARWIN_X86_64_CC=x86_64-apple-darwin20.4-clang \
+    DARWIN_X86_64_CXX=x86_64-apple-darwin20.4-clang++ \
+    DARWIN_ARM64_CC=arm64-apple-darwin20.4-clang \
+    DARWIN_ARM64_CXX=arm64-apple-darwin20.4-clang++ \
+    OSXCROSS_SDK=/opt/osxcross/SDK/MacOSX11.3.sdk \
+    GOROOT=/usr/local/go \
+    GOPATH=/home/dev/go \
+    \
+    # Phase 1 extras: convenience env vars for libbpf-on-CentOS-6 build path.
+    # Use case: CGO + libbpfgo binary that deploys to CentOS 6+ AND wants eBPF
+    # at runtime where supported. ABI floor stays at glibc 2.12 (verified GLIBC_2.9).
+    PHASE1_EXTRAS_INCLUDE=/opt/x-tools-extras/x86_64-centos6-extras/include \
+    PHASE1_EXTRAS_LIB=/opt/x-tools-extras/x86_64-centos6-extras/lib64 \
+    PHASE1_LIBBPF_INCLUDE=/opt/x-tools-extras/x86_64-centos6-extras/libbpf-built/include \
+    PHASE1_LIBBPF_A=/opt/x-tools-extras/x86_64-centos6-extras/libbpf-built/libbpf.a \
+    PHASE1_LIBELF_A=/opt/x-tools-extras/x86_64-centos6-extras/lib64/libelf.a \
+    PHASE1_LIBZ_A=/opt/x-tools-extras/x86_64-centos6-extras/lib64/libz.a \
+    PHASE1_LIBZSTD_A=/opt/x-tools-extras/x86_64-centos6-extras/lib64/libzstd.a \
+    PHASE1_EXTRAS_COMPAT=/opt/x-tools-extras/x86_64-centos6-extras/include/extras-compat.h
+
+# MOTD: NVIDIA NGC-style banner (survey 5/10 — pro dev container convention).
+#  - title in cyan, two `==` rule lines
+#  - section headings bold
+#  - version specs in dim gray, column-aligned (spec-sheet feel)
+#  - footer hint in yellow
+#  - TTY-aware: pipes / docker logs get plain text, no escape leak
+RUN cat > /usr/local/bin/cross-toolchain-motd <<'EOF' && chmod 755 /usr/local/bin/cross-toolchain-motd
+#!/usr/bin/env bash
+if [[ -t 1 ]]; then
+    C=$'\033[1;36m'   # bold cyan title
+    B=$'\033[1m'      # bold section heading
+    D=$'\033[2;37m'   # dim gray versions
+    Y=$'\033[0;33m'   # yellow hint
+    R=$'\033[0m'      # reset
+else
+    C= B= D= Y= R=
+fi
+
+printf '\n'
+printf "${C}================================================================${R}\n"
+printf "${C}==           finalfantasyliu/cross-toolchain  v1.0            ==${R}\n"
+printf "${C}================================================================${R}\n\n"
+
+printf "  ${B}Linux targets${R}\n"
+printf "    x86_64-centos6-linux-gnu     ${D}gcc 15.2.0   glibc 2.12   ct-ng 1.25   multilib${R}\n"
+printf "    x86_64-centos7-linux-gnu     ${D}gcc 15.2.0   glibc 2.17   ct-ng 1.28${R}\n"
+printf "    aarch64-centos7-linux-gnu    ${D}gcc 15.2.0   glibc 2.17   ct-ng 1.28${R}\n\n"
+
+printf "  ${B}macOS targets${R}\n"
+printf "    x86_64-apple-darwin20.4      ${D}clang 18     SDK 11.3     osxcross   deploy 10.15+${R}\n"
+printf "    arm64-apple-darwin20.4       ${D}clang 18     SDK 11.3     osxcross   deploy 11.0+${R}\n\n"
+
+printf "  ${B}Go runtime${R}\n"
+printf "    go 1.22.12                   ${D}generics + slog; covers CentOS 6 + macOS 10.15${R}\n\n"
+
+printf "  ${B}Phase 1 extras${R} (libbpf static linkable into CentOS 6 binary)\n"
+printf "    libbpf.a (master)            ${D}+ libelf.a, libz.a, libzstd.a   floor: GLIBC_2.9${R}\n"
+printf "    \$PHASE1_LIBBPF_A             ${D}path to pre-built libbpf.a${R}\n\n"
+
+printf "${D}----------------------------------------------------------------${R}\n"
+printf "  Run ${Y}cross-toolchain-help${R} for full tool list, env vars, recipes.\n"
+printf "${D}----------------------------------------------------------------${R}\n\n"
+EOF
+
+# Plain-text /etc/motd as a fallback (some distro tooling cats it directly).
+RUN cat > /etc/motd <<'EOF'
+finalfantasyliu/cross-toolchain — 5 cross-toolchains + Go 1.22 + Phase 1 libbpf extras
+
+  x86_64-centos6-linux-gnu-gcc      Linux x86_64, CentOS 6+ (glibc 2.12, multilib)
+  x86_64-centos7-linux-gnu-gcc      Linux x86_64, CentOS 7+ (glibc 2.17)
+  aarch64-centos7-linux-gnu-gcc     Linux aarch64, CentOS 7+ (glibc 2.17)
+  x86_64-apple-darwin20.4-clang     macOS Intel, deploy 10.15+
+  arm64-apple-darwin20.4-clang      macOS Apple Silicon, deploy 11.0+
+  go                                Go 1.22.12 (cover all of above)
+
+  $PHASE1_LIBBPF_A                  pre-built libbpf.a (CentOS 6 floor) for CGO+eBPF binary
+
+For full tool list, env vars, recipes:  cross-toolchain-help
+EOF
+
+# Full tool reference at /etc/cross-toolchain-help (only shown on demand).
+RUN cat > /etc/cross-toolchain-help <<'EOF'
+================================================================================
+  finalfantasyliu/cross-toolchain  —  full reference
+
+  All cross-compilers + tools are on $PATH.
+================================================================================
+
+TARGETS
+
+  Linux x86_64 (CentOS 6+, multilib)   x86_64-centos6-linux-gnu-       glibc 2.12
+  Linux x86_64 (CentOS 7+/RHEL 8+)     x86_64-centos7-linux-gnu-       glibc 2.17
+  Linux aarch64 (CentOS 7+/RHEL 8+)    aarch64-centos7-linux-gnu-      glibc 2.17
+  macOS Intel  (10.15+)                x86_64-apple-darwin20.4-        libSystem
+  macOS arm64  (11.0+)                 arm64-apple-darwin20.4-         libSystem
+                                       aarch64-apple-darwin20.4-  (autotools alias)
+  Linux x86_64 autotools alias         x86_64-linux-gnu-               (configure, Phase 1)
+  Linux aarch64 autotools alias        aarch64-linux-gnu-              (configure)
+
+  Append a tool name to a prefix: x86_64-centos6-linux-gnu-gcc, -ld, -ar, ...
+
+TOOLS PER LINUX PREFIX  (replace <P> with one of the 3 Linux prefixes)
+
+  compile / link  <P>gcc  <P>g++  <P>cpp  <P>cc  <P>c++  <P>as  <P>ld  <P>ld.bfd
+                  <P>ar  <P>ranlib  <P>strip
+  inspect ELF     <P>readelf  <P>objdump  <P>nm  <P>strings  <P>size
+                  <P>addr2line  <P>c++filt  <P>elfedit  <P>objcopy
+  profile         <P>gcov  <P>gcov-tool  <P>gcov-dump  <P>gprof
+  debug           <P>gdb  <P>gdb-add-index
+                  (gdbserver: /opt/x-tools/<P>linux-gnu/<P>linux-gnu/debug-root/usr/bin/)
+  misc            <P>lto-dump  <P>ldd  <P>populate  <P>gstack
+
+TOOLS PER macOS PREFIX  (replace <P> with x86_64- / arm64- / aarch64-)
+
+  compile / link  <P>apple-darwin20.4-clang  -clang++  -clang++-libc++  -clang++-stdc++
+                  <P>apple-darwin20.4-cc  -c++  -ld  -as  -ar  -ranlib
+  inspect Mach-O  <P>apple-darwin20.4-otool  -nm  -strings  -size  -dyldinfo
+                  -machocheck  -vtool  -checksyms  -pagestuff  -segedit  -unwinddump
+  Mach-O surgery  <P>apple-darwin20.4-install_name_tool  (rewrite LC_LOAD_DYLIB)
+                  -lipo  (universal binary)   -bitcode_strip   -codesign_allocate
+                  -cmpdylib  -redo_prebinding  -mtoc  -mtor  -ctf_insert
+                  -makerelocs  -seg_addr_table  -seg_hack  -libtool
+  build glue      <P>apple-darwin20.4-pkg-config  -cmake  -xcrun  -xcodebuild
+                  -sw_vers  -dsymutil  -osxcross-{conf,env,man,cmp}
+  helper alias    o64-clang  o64-clang++   = x86_64-apple-darwin20.4-clang/clang++
+                  oa64-clang oa64-clang++  = arm64-apple-darwin20.4-clang/clang++
+                  osxcross-cmake (target-aware cmake driver)
+                  lipo / xar (no-prefix helpers in /opt/osxcross/bin)
+
+Go 1.22.12
+
+  go  gofmt   GOROOT=/usr/local/go   GOPATH=/home/dev/go
+  has:    generics (1.18+)  slog (1.21+)  for-range int + loop var fix (1.22)
+  lacks:  range-over-func iter (1.23+)  generic type alias (1.24+)
+
+ENV VARS
+
+  $X86_64_CENTOS6_CC     $X86_64_CENTOS6_CXX
+  $X86_64_CENTOS7_CC     $X86_64_CENTOS7_CXX
+  $AARCH64_CENTOS7_CC    $AARCH64_CENTOS7_CXX
+  $DARWIN_X86_64_CC      $DARWIN_X86_64_CXX
+  $DARWIN_ARM64_CC       $DARWIN_ARM64_CXX
+  $OSXCROSS_SDK          (= /opt/osxcross/SDK/MacOSX11.3.sdk)
+
+PHASE 1 EXTRAS (libbpf static link into CentOS 6 binary; final ABI floor 2.12)
+
+  $PHASE1_EXTRAS_INCLUDE       cherry-pick UAPI headers (linux/{bpf,btf,if_xdp,...}.h)
+                               + libelf.h, gelf.h, zlib.h, zstd.h
+                               + extras-compat.h (__aligned_u64 etc compat macros)
+  $PHASE1_EXTRAS_LIB           libelf.a, libz.a, libzstd.a (cross-built with Phase 1)
+  $PHASE1_LIBBPF_INCLUDE       libbpf API headers (bpf/libbpf.h, bpf/bpf.h, ...)
+  $PHASE1_LIBBPF_A             pre-built libbpf master (linkable into Phase 1 binary)
+  $PHASE1_LIBELF_A             $PHASE1_LIBZ_A     $PHASE1_LIBZSTD_A
+  $PHASE1_EXTRAS_COMPAT        extras-compat.h path for -include flag
+
+HOST HELPERS  (apt; no prefix)
+
+  build:    make  ninja  cmake  pkg-config  patch
+  VCS:      git  curl  rsync
+  lang:     python3
+  edit:     vim-tiny (vi)  less
+  LLVM:     clang  lld  (osxcross runtime)
+  priv:     sudo (dev: NOPASSWD)  gosu (entrypoint)
+  archive:  bzip2  xz-utils
+
+RECIPES
+
+  # C/C++ for old CentOS — static libstdc++ matters
+  x86_64-centos6-linux-gnu-gcc -static-libstdc++ -static-libgcc app.cpp -o app
+
+  # C/C++ for CentOS 7+/RHEL 8+ deploy (eBPF-capable kernels live here)
+  x86_64-centos7-linux-gnu-gcc -O2 app.c -o app
+
+  # C/C++ for macOS — set min OS
+  x86_64-apple-darwin20.4-clang -mmacos-version-min=10.15 app.c -o app
+
+  # Go cross (no CGO)
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build .
+
+  # Go + CGO with cross-gcc
+  CC=x86_64-centos6-linux-gnu-gcc CGO_ENABLED=1 \
+      GOOS=linux GOARCH=amd64 go build .
+
+  # Phase 1 binary that statically links libbpf, runs on CentOS 6+.
+  # (BPF load itself decided at runtime by your Go code; old kernel = skip.)
+  # No -D__NR_* needed: libbpf.a is already pre-built with syscall numbers
+  # baked into machine code. The extras-compat.h add only struct field macros
+  # (__aligned_u64) that may appear in your code via #include <linux/bpf.h>.
+  CC=x86_64-centos6-linux-gnu-gcc CGO_ENABLED=1 \
+      CGO_CFLAGS="-I$PHASE1_LIBBPF_INCLUDE -I$PHASE1_EXTRAS_INCLUDE \
+                  -include $PHASE1_EXTRAS_COMPAT" \
+      CGO_LDFLAGS="$PHASE1_LIBBPF_A $PHASE1_LIBELF_A $PHASE1_LIBZ_A $PHASE1_LIBZSTD_A -lpthread" \
+      GOOS=linux GOARCH=amd64 go build .
+
+  # Verify ABI floor stays at glibc 2.12 (CI gate):
+  x86_64-centos6-linux-gnu-objdump -T sensor | grep -oE "GLIBC_[0-9.]+" | sort -uV | tail -1
+  # → should be GLIBC_2.12 or older
+
+  # autotools — uses /usr/local/bin/aarch64-linux-gnu-* alias
+  ./configure --host=aarch64-linux-gnu
+
+================================================================================
+EOF
+
+# Wrapper command `cross-toolchain-help` opens the full reference under less.
+RUN cat > /usr/local/bin/cross-toolchain-help <<'EOF'
+#!/bin/sh
+exec less -R /etc/cross-toolchain-help
+EOF
+RUN chmod 755 /usr/local/bin/cross-toolchain-help
+
+# Ubuntu's default /etc/bash.bashrc prints "To run a command as administrator
+# (user 'root')...". The check is: skip if ~/.hushlogin exists. Touch it to
+# avoid duplicating with our own banner.
+RUN touch /home/dev/.hushlogin /root/.hushlogin
+
+# Interactive bash shell setup: print MOTD, color PS1, ls/grep aliases, less colors.
+# The `[ -z "$PS1" ] && return` guard ensures non-interactive shells (e.g.
+# `docker run image cmd`) skip all of this — only interactive shells see it.
+RUN cat >> /etc/bash.bashrc <<'EOF'
+
+# === interactive-only setup ===
+[ -z "$PS1" ] && return
+
+# Trigger the colored PS1 baked into Ubuntu's /etc/skel/.bashrc.
+# (User's ~/.bashrc is sourced after this file, so set the var here so it's
+# in scope when ~/.bashrc runs.)
+force_color_prompt=yes
+
+# Fallback PS1 in case ~/.bashrc didn't pick it up (e.g. root has no .bashrc).
+PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+
+# Force a real terminal type (docker run -t defaults to dumb without color).
+[ "${TERM:-dumb}" = "dumb" ] && export TERM=xterm-256color
+
+# Enable dircolors default colour scheme (ls --color)
+if [ -x /usr/bin/dircolors ]; then
+    eval "$(dircolors -b)"
+fi
+
+# Plain colors only — no Nerd Font icons (avoids □ boxes in CI / unstyled fonts).
+alias ls='ls --color=auto'
+alias ll='ls -alF --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+alias grep='grep --color=auto'
+alias fgrep='fgrep --color=auto'
+alias egrep='egrep --color=auto'
+alias diff='diff --color=auto'
+alias ip='ip --color=auto'
+
+# less / man color (raw escape passthrough)
+export LESS='-R'
+export MANPAGER='less -R --use-color -Dd+r -Du+b'
+
+# git colors (git checks isatty itself, but force enable for consistency)
+export GIT_PAGER='less -R'
+
+# Auto-print colored MOTD on shell entry. The script auto-detects TTY and
+# falls back to plain text when piped.
+cross-toolchain-motd
+EOF
+
+# Entrypoint runs as root (it reads HOST_UID/HOST_GID then gosu drops to dev).
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/cross-toolchain-entrypoint.sh"]
+CMD []

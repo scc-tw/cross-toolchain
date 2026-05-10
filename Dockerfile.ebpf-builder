@@ -1,0 +1,167 @@
+# syntax=docker/dockerfile:1.7
+# finalfantasyliu/ebpf-builder — minimal eBPF program build image
+#
+# SCOPE: This image only compiles BPF programs (.bpf.c → .bpf.o) and
+# generates skeleton headers + vmlinux.h. It does NOT compile user-space
+# loaders (Go, C/C++ programs that link libbpf) — that work happens in
+# the cross-toolchain image, where the cross-gcc toolchains live.
+#
+# Why split: glibc ABI conflict.
+#   - libbpf source uses glibc 2.17+ symbols (getauxval, readlinkat, ...)
+#   - The cross-toolchain image's Phase 1 toolchain targets glibc 2.12 (CentOS 6)
+#   - Mixing libbpf compile into Phase 1 binaries is impossible (CentOS 6 has
+#     no eBPF kernel anyway, kernel 2.6.32 < 3.18). Two-binary deploy strategy:
+#       legacy-agent  (Phase 1, no eBPF)        deploy CentOS 6+
+#       eBPF-sensor   (Phase 4, +libbpf static) deploy CentOS 7+/RHEL 8+
+#   - This image produces only the .bpf.o + skeleton; user-space binary that
+#     loads them is built separately in the cross-toolchain image.
+#
+# CONTENTS:
+#   - clang-19 + lld-19 + llvm-19  (apt.llvm.org)  → `clang -target bpf` compile
+#   - bpftool v7.5.0 (static prebuilt binary, arm64) → vmlinux.h + skeleton gen
+#   - libbpf v1.5.0 BPF-side headers (bpf_helpers.h, bpf_tracing.h, bpf_core_read.h, ...)
+#   - make + bash + python3 (Makefile + apt.llvm.org install script)
+#
+# NOT INCLUDED (intentional — these belong in cross-toolchain image):
+#   - Go toolchain, gcc, g++, build-essential
+#   - libelf-dev, libz-dev, libzstd-dev (libbpf full build deps)
+#   - libbpf .a (static lib) — built per-target by user-space project
+#   - bpf2go / cilium-ebpf — Go tools, run during user-space `go generate`
+#
+# WHY clang-19 and not 20+:
+#   - clang 20 changed default `-mcpu=v3` (BPF ISA v3 needs kernel ≥5.5).
+#     Pinning clang 19 keeps default `-mcpu=v1` so the .bpf.o runs on older
+#     kernels unless the user explicitly opts into v2/v3/v4 with -mcpu=.
+#   - Tracee, KubeArmor, BCC all pin clang 19 for the same reason
+#     (see eBPF survey notes in toolchain/ebpf_survey.md).
+#
+# WHY bpftool v7.5.0:
+#   - paired with libbpf v1.5 release (matched skeleton-gen + BTF schema)
+#   - prebuilt static binaries for arm64 + amd64 (no compile from source)
+#
+# Usage examples:
+#   # Build the image (~5 min)
+#   docker build --platform=linux/arm64 -t finalfantasyliu/ebpf-builder:latest \
+#                -f toolchain/Dockerfile.ebpf-builder toolchain/
+#
+#   # Compile a BPF program (CO-RE)
+#   docker run --rm --platform=linux/arm64 -v "$PWD:/work" \
+#       finalfantasyliu/ebpf-builder:latest \
+#       clang-19 -O2 -g -target bpf \
+#                -I/opt/libbpf/include \
+#                -c probe.bpf.c -o probe.bpf.o
+#
+#   # Generate skeleton header for cilium/ebpf or libbpf-style userspace
+#   docker run --rm --platform=linux/arm64 -v "$PWD:/work" \
+#       finalfantasyliu/ebpf-builder:latest \
+#       bpftool gen skeleton probe.bpf.o > probe.skel.h
+#
+#   # Generate vmlinux.h from running kernel BTF (do this on the TARGET host)
+#   docker run --rm --platform=linux/arm64 \
+#       -v /sys/kernel/btf:/sys/kernel/btf:ro -v "$PWD:/work" \
+#       finalfantasyliu/ebpf-builder:latest \
+#       bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+
+FROM --platform=linux/arm64 ubuntu:24.04
+
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+LABEL org.opencontainers.image.title="ebpf-builder" \
+      org.opencontainers.image.description="Minimal image for compiling eBPF programs (.bpf.c → .bpf.o) + skeleton + vmlinux.h. clang-19 + bpftool v7.5.0 + libbpf v1.5 BPF-side headers. NOT a user-space build image — pair with cross-toolchain for that." \
+      org.opencontainers.image.licenses="GPL-3.0" \
+      org.opencontainers.image.authors="finalfantasyliu" \
+      org.opencontainers.image.vendor="finalfantasyliu" \
+      org.opencontainers.image.version="1.0.0"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# ──────────────────────────────────────────────────────────────────
+# clang-19 from apt.llvm.org
+# ──────────────────────────────────────────────────────────────────
+# Ubuntu 24.04's default clang is 18. We need 19 for matching Tracee's
+# BPF backend pin (cpu=v3 stays opt-in; 20+ flipped the default).
+# apt.llvm.org publishes signed packages for noble.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        gnupg \
+        lsb-release \
+        make \
+        python3 \
+        software-properties-common \
+        wget \
+    && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        clang-19 \
+        lld-19 \
+        llvm-19 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Symlink unversioned names → 19 (so `clang` works without -19 suffix)
+RUN ln -sf /usr/bin/clang-19   /usr/local/bin/clang \
+ && ln -sf /usr/bin/clang++-19 /usr/local/bin/clang++ \
+ && ln -sf /usr/bin/lld-19     /usr/local/bin/lld \
+ && ln -sf /usr/bin/llc-19     /usr/local/bin/llc \
+ && ln -sf /usr/bin/llvm-strip-19 /usr/local/bin/llvm-strip
+
+# ──────────────────────────────────────────────────────────────────
+# bpftool v7.5.0 (static prebuilt — no source compile needed)
+# ──────────────────────────────────────────────────────────────────
+# arm64 sha256: 80e0d5b59bfbc7ecce06985802babf4c2b4ff78be3640202a19e3d7278fceb7b
+# (verified against https://github.com/libbpf/bpftool/releases/download/v7.5.0/bpftool-v7.5.0-arm64.tar.gz.sha256sum)
+ARG BPFTOOL_VERSION=7.5.0
+ARG BPFTOOL_SHA256_ARM64=80e0d5b59bfbc7ecce06985802babf4c2b4ff78be3640202a19e3d7278fceb7b
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSLO "https://github.com/libbpf/bpftool/releases/download/v${BPFTOOL_VERSION}/bpftool-v${BPFTOOL_VERSION}-arm64.tar.gz"; \
+    echo "${BPFTOOL_SHA256_ARM64}  bpftool-v${BPFTOOL_VERSION}-arm64.tar.gz" | sha256sum -c -; \
+    tar xzf "bpftool-v${BPFTOOL_VERSION}-arm64.tar.gz"; \
+    install -m 755 bpftool /usr/local/bin/bpftool; \
+    rm -f /tmp/bpftool*; \
+    bpftool version
+
+# ──────────────────────────────────────────────────────────────────
+# libbpf v1.5.0 BPF-side headers
+# ──────────────────────────────────────────────────────────────────
+# Only the BPF-side headers (used inside .bpf.c programs) are installed:
+#   bpf_helpers.h, bpf_tracing.h, bpf_core_read.h, bpf_endian.h, ...
+# Userspace headers (libbpf.h, btf.h, etc.) are NOT included — those are
+# linked from libbpf.a during user-space build, which happens in the
+# cross-toolchain image.
+ARG LIBBPF_VERSION=1.5.0
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSLO "https://github.com/libbpf/libbpf/archive/refs/tags/v${LIBBPF_VERSION}.tar.gz"; \
+    tar xzf "v${LIBBPF_VERSION}.tar.gz"; \
+    mkdir -p /opt/libbpf/include/bpf; \
+    cp libbpf-${LIBBPF_VERSION}/src/bpf_helpers.h           /opt/libbpf/include/bpf/; \
+    cp libbpf-${LIBBPF_VERSION}/src/bpf_helper_defs.h       /opt/libbpf/include/bpf/ 2>/dev/null || true; \
+    cp libbpf-${LIBBPF_VERSION}/src/bpf_tracing.h           /opt/libbpf/include/bpf/; \
+    cp libbpf-${LIBBPF_VERSION}/src/bpf_core_read.h         /opt/libbpf/include/bpf/; \
+    cp libbpf-${LIBBPF_VERSION}/src/bpf_endian.h            /opt/libbpf/include/bpf/; \
+    cp libbpf-${LIBBPF_VERSION}/include/uapi/linux/bpf.h    /opt/libbpf/include/ 2>/dev/null || true; \
+    cp libbpf-${LIBBPF_VERSION}/include/uapi/linux/bpf_common.h /opt/libbpf/include/ 2>/dev/null || true; \
+    rm -rf /tmp/libbpf-${LIBBPF_VERSION} /tmp/v${LIBBPF_VERSION}.tar.gz; \
+    ls /opt/libbpf/include/bpf/
+
+ENV BPF_INCLUDE=/opt/libbpf/include \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# ──────────────────────────────────────────────────────────────────
+# Non-root user (uid 1000) for bind-mount perm alignment
+# ──────────────────────────────────────────────────────────────────
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    useradd -u 1000 -g 100 -m -s /bin/bash dev; \
+    mkdir -p /work; \
+    chown -R dev:users /work
+
+USER dev
+WORKDIR /work
+
+CMD ["/bin/bash"]

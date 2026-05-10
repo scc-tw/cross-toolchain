@@ -1,0 +1,64 @@
+# Phase 4: ct-ng 1.28 native -> x86_64-centos7-linux-gnu
+# kernel 3.10.108 / glibc 2.17 / GCC 15.2.0 / binutils 2.42 / GDB 16.3
+# Mirror of Phase 2 with arch flipped from aarch64 to x86_64.
+# Pairs with aarch64-centos7-glibc217-gcc15 to give two-arch CentOS 7+/RHEL 8+ deploy.
+
+# === Architecture ===
+# kconfig is case-sensitive: X86 must be uppercase. Wrong case silently
+# falls back to alphabetical first choice (alpha = DEC Alpha).
+# Reference: ct-ng 1.28 sample samples/x86_64-centos7-linux-gnu/crosstool.config
+CT_ARCH_X86=y
+CT_ARCH_64=y
+# No multilib: 32-bit x86 deploy target is irrelevant for our use case
+# (CentOS 7+/RHEL 8+ servers are 64-bit only).
+CT_TARGET_VENDOR="centos7"
+
+# === Kernel headers ===
+# 3.10.108 = highest 3.10.x; matches CentOS 7 kernel line.
+# Note: this is just the *header* version used to build glibc; runtime
+# kernel can be anything >= 3.10 (incl. ELRepo kernel-ml 5.x/6.x).
+CT_KERNEL_LINUX=y
+CT_LINUX_V_3_10=y
+CT_LINUX_VERSION="3.10.108"
+
+# === C library (glibc 2.17) ===
+# CentOS 7 / RHEL 7 ABI floor.
+# Binaries linked here run on glibc >=2.17 → covers RHEL 8 (2.28),
+# RHEL 9 (2.34), Ubuntu 18.04+ (2.27+), Debian 10+ (2.28+).
+CT_LIBC_GLIBC=y
+CT_GLIBC_V_2_17=y
+CT_GLIBC_VERSION="2.17"
+
+# === binutils ===
+CT_BINUTILS_V_2_42=y
+CT_BINUTILS_VERSION="2.42"
+
+# === GCC ===
+CT_GCC_V_15=y
+CT_GCC_VERSION="15.2.0"
+CT_CC_LANG_CXX=y
+CT_CC_GCC_LIBQUADMATH=y
+CT_CC_GCC_LIBGOMP=y
+CT_CC_GCC_LIBSANITIZER=n
+CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"
+
+# === GDB ===
+# CT_DEBUG_GDB is the menuconfig master switch. Without it all CT_GDB_*
+# settings below sit inside `if DEBUG_GDB` blocks and silently get skipped.
+CT_DEBUG_GDB=y
+CT_GDB_V_16=y
+CT_GDB_VERSION="16.3"
+
+# Cross-gdb: runs on host (arm64 builder), debugs target (x86_64) binaries.
+CT_GDB_CROSS=y
+CT_GDB_CROSS_PYTHON=y
+CT_GDB_CROSS_PYTHON_BINARY="python3"
+
+# gdbserver: target-side x86_64 ELF binary; deploy onto CentOS 7+/RHEL 8+
+# machines so host cross-gdb can attach over TCP (VSCode remote debug).
+# x86_64 has no multilib enabled here, so we skip the Phase 1 RAX conflict.
+CT_GDB_GDBSERVER=y
+
+# === Output prefix ===
+CT_PREFIX_DIR="/opt/x-tools/${CT_TARGET}"
+CT_PREFIX_DIR_RO=y

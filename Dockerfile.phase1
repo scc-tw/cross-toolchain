@@ -1,0 +1,362 @@
+# capsule8 cross-toolchain builder image — Phase 1
+#
+# Phase 1 (this file):
+#   Build ct-ng 1.25 from source + backport GCC 15.2.0 metadata
+#   → produce x86_64-centos6-linux-gnu (glibc 2.12.1 + GCC 15.2.0)
+#   With MULTILIB: x86_64 (default) + i686 (-m32) sysroots both built
+#
+# Phase 2 (separate file: Dockerfile.phase2):
+#   ct-ng 1.28 native (no backport) → aarch64-centos7-linux-gnu
+#   (glibc 2.17 + GCC 15.2.0)
+#
+# Phase 3 (separate file: Dockerfile.phase3):
+#   osxcross + MacOSX11.3.sdk
+#   → x86_64-apple-darwin20.4 + arm64-apple-darwin20.4
+#
+# Phase 4 (separate file: Dockerfile.phase4):
+#   ct-ng 1.28 native → x86_64-centos7-linux-gnu (glibc 2.17 + GCC 15.2.0)
+#   Pairs with Phase 2 for CentOS 7+/RHEL 8+ deploy on both archs.
+#
+# Final consumer image: Dockerfile.all (combines all 4 phases + Go + Phase 1 extras)
+#
+# -----------------------------------------------------------------------------
+# Workflow (split from older single-step design):
+#
+#   ① Build the image ONCE (~5 min, only depends on apt + ct-ng source):
+#      docker build --platform=linux/arm64 \
+#         -t finalfantasyliu/cross-toolbox:phase1 -f toolchain/Dockerfile.phase1 toolchain/
+#
+#   ② Run cross-toolchain build per target (~60-100 min for x86_64 multilib):
+#      mkdir -p _out _logs
+#      docker run --rm \
+#         --platform=linux/arm64 \
+#         -v "$PWD/_out:/opt/x-tools" \
+#         -v "$PWD/_logs:/build" \
+#         finalfantasyliu/cross-toolbox:phase1 \
+#         x86_64-centos6-glibc212-gcc15
+#
+#   ③ Iterate: tweak defconfig in toolchain/configs/ + re-run step ②.
+#      defconfigs / patches are baked into the image so you DO need to rebuild
+#      if you edit them — but only the small final layers change, so it's fast.
+#
+# Why split: putting `ct-ng build` inside `docker build` means Docker discards
+# the whole layer (including /build/build.log) on failure, leaving only the
+# tail of stdout. With docker run + volume mounts, the host always sees logs.
+# See toolchain/docker_experiments.md for the longer rationale.
+
+# syntax=docker/dockerfile:1.7
+
+# -----------------------------------------------------------------------------
+# Stage: builder — single stage for now (phase 1 only).
+#   Phase 2/3 will add more stages later.
+# -----------------------------------------------------------------------------
+FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+
+# Survey result (2026-05-09):
+#   - ubuntu:24.04 weekly pulls 5.77M, last refreshed 4 days ago
+#   - regular support to 2029-05, ESM to 2036
+#   - crosstool-ng CI tests Ubuntu 22.04 (24.04 same family lineage)
+#   - osxcross README's apt commands target Ubuntu/Debian
+# See toolchain/docker_experiments.md "Phase 0 / Decision 1" for full survey.
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# -----------------------------------------------------------------------------
+# Apt deps
+#   - ct-ng's own build (autotools, ncurses, help2man)
+#   - what ct-ng spawns at toolchain build time (gcc, make, m4, gettext, etc)
+#   - source tarball download (curl, wget, ca-certificates, git)
+#   - tarball decompress (xz-utils, bzip2)
+#   - patches (patch)
+#   - companion libs build (gmp/mpfr/mpc/isl come from ct-ng-built source,
+#     but Texinfo / makeinfo needed for GCC docs; we keep CT_REMOVE_DOCS=y
+#     but configure step still probes for makeinfo)
+# -----------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        bison \
+        build-essential \
+        bzip2 \
+        ca-certificates \
+        curl \
+        file \
+        flex \
+        gawk \
+        gettext \
+        git \
+        gperf \
+        help2man \
+        libncurses-dev \
+        libtool \
+        libtool-bin \
+        m4 \
+        make \
+        patch \
+        perl \
+        pkg-config \
+        python3 \
+        python3-dev \
+        rsync \
+        sed \
+        texinfo \
+        unzip \
+        wget \
+        xz-utils \
+        zip \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Non-root build user
+#   ct-ng aborts when run as root (see scripts/functions::CT_DoExecLog).
+#   uid/gid 1000 is conventional non-root user; matches host user on most
+#   Ubuntu / Debian / Mac docker setups so bind-mounted output is writable.
+#
+#   Ubuntu 24.04 ships with a pre-created `ubuntu` user at UID 1000 (new in
+#   24.04, not present in 22.04). Delete it first so we can take 1000 for
+#   ctuser. The mail-spool touch+chown trick suppresses userdel's "no mail
+#   spool" warning. See docker_experiments.md Error #1.
+# -----------------------------------------------------------------------------
+RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
+    userdel -r ubuntu && \
+    groupadd -g 1000 ctuser && \
+    useradd -u 1000 -g 1000 -m -s /bin/bash ctuser && \
+    mkdir -p /opt/x-tools /opt/ct-ng-1.25 /build && \
+    chown -R ctuser:ctuser /opt/x-tools /opt/ct-ng-1.25 /build
+
+# -----------------------------------------------------------------------------
+# Copy vendor + patches + configs from build context
+#   Build context is `toolchain/` (see docker build command above), so paths
+#   below are relative to toolchain/.
+# -----------------------------------------------------------------------------
+COPY --chown=ctuser:ctuser vendor/ct-ng-1.25.0-release.tar.xz /tmp/
+COPY --chown=ctuser:ctuser patches/ct-ng-1.25-gcc15-backport/ /tmp/gcc15-backport/
+
+# All defconfigs (baked into image; defconfig name passed at docker run time)
+COPY --chown=ctuser:ctuser configs/ /configs/
+
+USER ctuser
+WORKDIR /tmp
+
+# -----------------------------------------------------------------------------
+# Build ct-ng 1.25 from source + apply GCC 15 backport.
+#
+# Why from source (not brew / apt):
+#   - Ubuntu's ct-ng package is too old / mismatched
+#   - We need exact 1.25.0 because brew's 1.28 dropped glibc 2.12 (1.26 commit
+#     6d5227b removed it)
+#   - Building from source lets us patch its packages/ tree before installing
+#
+# Backport steps (10-min mechanical work, two backports):
+#   GCC 15.2.0:
+#     1. Add packages/gcc/15.2.0/{chksum,version.desc}
+#     2. Append "15" to packages/gcc/package.desc milestones list
+#     3. Insert GCC_V_15 block into config/versions/gcc.in
+#   GDB 16.3:
+#     4. Add packages/gdb/16.3/{chksum,version.desc}
+#     5. Append "16" to packages/gdb/package.desc milestones list
+#     6. Insert GDB_V_16 block into config/versions/gdb.in
+# -----------------------------------------------------------------------------
+RUN set -eux; \
+    cd /tmp; \
+    tar xJf ct-ng-1.25.0-release.tar.xz; \
+    cd crosstool-ng-1.25.0; \
+    \
+    ##### GCC 15.2.0 backport #####
+    # 1. Drop GCC 15.2.0 package metadata + (initially empty) patch dir
+    cp -r /tmp/gcc15-backport/packages/gcc/15.2.0 packages/gcc/; \
+    # Drop our self-written .patch files (if any) into ct-ng's package dirs.
+    # ct-ng applies all numbered NNNN-*.patch in lexical order before build.
+    # `cp -n` skips existing (won't overwrite ct-ng's bundled patches).
+    # Use find+xargs to copy only .patch files, ignore .gitkeep / dirs.
+    find /tmp/gcc15-backport/packages/glibc/2.12.1 -maxdepth 1 -name '*.patch' \
+        -exec cp -n {} packages/glibc/2.12.1/ \; ; \
+    find /tmp/gcc15-backport/packages/binutils/2.38 -maxdepth 1 -name '*.patch' \
+        -exec cp -n {} packages/binutils/2.38/ \; ; \
+    # also catch any extra .patch files inside packages/gcc/15.2.0/ that we
+    # may add later (cp -r above already copied the dir, so this is a no-op
+    # unless we put .patch files at gcc15-backport top level — defensive)
+    find /tmp/gcc15-backport/packages/gcc/15.2.0 -maxdepth 1 -name '*.patch' \
+        -exec cp -n {} packages/gcc/15.2.0/ \; 2>/dev/null || true; \
+    \
+    # Verify our rtld.c patch landed (Error #8 backport) — fail-fast if not
+    test -f packages/glibc/2.12.1/0001-tls-x86_64-fix-imm-mode-movq-gcc15.patch; \
+    \
+    # 2. milestones += 15
+    sed -i "s|^milestones='4.9 5 6 7 8 9 10 11'|milestones='4.9 5 6 7 8 9 10 11 15'|" \
+        packages/gcc/package.desc; \
+    grep -q "milestones='4.9 5 6 7 8 9 10 11 15'" packages/gcc/package.desc; \
+    \
+    # 3. config/versions/gcc.in — insert GCC_V_15 block before GCC_V_11
+    # NOTE: select symbol is GCC_X_or_later (NOT CC_GCC_X_or_later) — that's the
+    # symbol kconfig dependencies use elsewhere (e.g., CLOOG_NEEDED if !GCC_5_or_later).
+    # Wrong prefix here means GCC_V_15 doesn't propagate "I'm GCC 5+", which causes
+    # CLooG to be needlessly built (and fail vs new ISL API). See docker_experiments.md
+    # Error #6 for the diagnosis.
+    awk '\
+        /^config GCC_V_11$/ && !done { \
+            print "config GCC_V_15"; \
+            print "    bool"; \
+            print "    prompt \"15.2.0\""; \
+            print "    select GCC_4_9_or_later"; \
+            print "    select GCC_5_or_later"; \
+            print "    select GCC_6_or_later"; \
+            print "    select GCC_7_or_later"; \
+            print "    select GCC_8_or_later"; \
+            print "    select GCC_9_or_later"; \
+            print "    select GCC_10_or_later"; \
+            print "    select GCC_11_or_later"; \
+            print ""; \
+            done=1 \
+        } \
+        /^    default n if GCC_V_11$/ { print "    default n if GCC_V_15" } \
+        /^    default \"11\.2\.0\" if GCC_V_11$/ { print "    default \"15.2.0\" if GCC_V_15" } \
+        { print } \
+    ' config/versions/gcc.in > config/versions/gcc.in.new; \
+    mv config/versions/gcc.in.new config/versions/gcc.in; \
+    grep -q "GCC_V_15" config/versions/gcc.in; \
+    grep -q '"15.2.0" if GCC_V_15' config/versions/gcc.in; \
+    grep -q "select GCC_5_or_later" config/versions/gcc.in; \
+    \
+    ##### GDB 16.3 backport #####
+    # 4. Drop GDB 16.3 package metadata
+    cp -r /tmp/gcc15-backport/packages/gdb/16.3 packages/gdb/; \
+    \
+    # 5. milestones += 16 (1.25 ships up to 11)
+    sed -i "s|^milestones='7.11 7.12 8.0 8.3 10 11'|milestones='7.11 7.12 8.0 8.3 10 11 16'|" \
+        packages/gdb/package.desc; \
+    grep -q "milestones='7.11 7.12 8.0 8.3 10 11 16'" packages/gdb/package.desc; \
+    \
+    # 6. config/versions/gdb.in — three places need GDB_V_16:
+    #    a) choice block (line ~462): bool entry so kconfig knows it exists
+    #    b) GDB_NO_VERSIONS block (line ~482-498): "default n if GDB_V_16" so
+    #       fall-through-to-y doesn't trigger select INVALID_CONFIGURATION
+    #    c) GDB_VERSION string block (line ~505-518): "default \"16.3\" if
+    #       GDB_V_16" so CT_GDB_VERSION resolves to 16.3 (not "unknown")
+    # See docker_experiments.md Error #2 for the diagnosis path.
+    awk '\
+        /^config GDB_V_11$/ && !done_choice { \
+            print "config GDB_V_16"; \
+            print "    bool \"16.3\""; \
+            print "    select GDB_later_than_11"; \
+            print "    select GDB_10_or_later"; \
+            print "    select GDB_11_or_later"; \
+            print ""; \
+            done_choice=1 \
+        } \
+        /^    default n if GDB_V_11$/ { print "    default n if GDB_V_16" } \
+        /^    default \"11\.2\" if GDB_V_11$/ { print "    default \"16.3\" if GDB_V_16" } \
+        { print } \
+    ' config/versions/gdb.in > config/versions/gdb.in.new; \
+    mv config/versions/gdb.in.new config/versions/gdb.in; \
+    grep -q "^config GDB_V_16$" config/versions/gdb.in; \
+    grep -q '^    default n if GDB_V_16$' config/versions/gdb.in; \
+    grep -q '^    default "16.3" if GDB_V_16$' config/versions/gdb.in; \
+    \
+    ##### Forward-port: glibc MAKEINFO_WORKAROUND for old glibc + new Texinfo #####
+    # ct-ng 1.28 added CT_GLIBC_MAKEINFO_WORKAROUND (def_bool y if GLIBC_2_23_or_older)
+    # because Texinfo 6.8+ rejects @colophon syntax used in glibc ≤ 2.23 .texi.
+    # Ubuntu 24.04 ships Texinfo 7.1 — glibc 2.12 .info build will fail.
+    # Apply unconditionally since our defconfig pins glibc 2.12.1.
+    # See ct-ng 1.28 scripts/build/libc/glibc.sh for the source pattern.
+    sed -i \
+        '/echo "ac_cv_path_BASH_SHELL=\/bin\/bash" >>config.cache/a\    echo "ac_cv_prog_MAKEINFO=" >>config.cache' \
+        scripts/build/libc/glibc.sh; \
+    grep -q 'ac_cv_prog_MAKEINFO=' scripts/build/libc/glibc.sh; \
+    \
+    ##### Universal fix: stage-1 GCC build needs all-build-libcpp #####
+    # ct-ng 1.28 added `all-build-libcpp` to its `make` target list because
+    # GCC 12+ ships build/genmatch that depends on BUILD-host's libcpp.a (not
+    # HOST's). ct-ng 1.25 only invokes `make all-libcpp` which builds HOST-side,
+    # leaving build-host libcpp.a missing → fail at stage-1 GCC.
+    # See ct-ng issue #1564 + GCC patches mailing list 2021-July/575205.
+    # See docker_experiments.md Error #7 for full diagnosis.
+    sed -i \
+        's|make \${CT_JOBSFLAGS} all-libcpp$|make ${CT_JOBSFLAGS} all-libcpp all-build-libcpp|' \
+        scripts/build/cc/gcc.sh; \
+    sed -i \
+        's|make \${CT_JOBSFLAGS} all-libcpp all-build-libiberty|make ${CT_JOBSFLAGS} all-libcpp all-build-libcpp all-build-libiberty|' \
+        scripts/build/cc/gcc.sh; \
+    grep -q "all-libcpp all-build-libcpp" scripts/build/cc/gcc.sh; \
+    \
+    ##### Universal fix: zlib 1.2.12 mirror (sourceforge + zlib.net pulled the file) #####
+    # zlib 1.2.12 (2022-03) had CVE-2022-37434 → upstream pulled the tarball
+    # from both sourceforge and zlib.net root. Only zlib.net/fossils/ still
+    # carries it. Same fix as macOS-host path (crosstool_ng_explained.md
+    # Mechanism 7 Fix #3, also applied in toolchain/scripts/bootstrap-ctng.sh).
+    sed -i \
+        "s|mirrors='http://downloads.sourceforge.net/project/libpng/zlib/\${CT_ZLIB_VERSION} https://www.zlib.net/'|mirrors='https://www.zlib.net/fossils https://www.zlib.net/'|" \
+        packages/zlib/package.desc; \
+    grep -q "fossils" packages/zlib/package.desc; \
+    sed -i \
+        "s|default \"http://downloads.sourceforge.net/project/libpng/zlib/\${CT_ZLIB_VERSION} https://www.zlib.net/\"|default \"https://www.zlib.net/fossils https://www.zlib.net/\"|" \
+        config/versions/zlib.in; \
+    grep -q "fossils" config/versions/zlib.in; \
+    \
+    ##### configure + build + install ct-ng itself #####
+    ./configure --prefix=/opt/ct-ng-1.25; \
+    make -j"$(nproc)"; \
+    make install; \
+    \
+    ##### Install our backport package dirs + patches into ct-ng's installed tree #####
+    # ct-ng's Makefile.am has a HARDCODED list of packages/files to install.
+    # Our brand-new package dirs (gcc/15.2.0, gdb/16.3) are NOT in that list,
+    # so `make install` skips them entirely — even chksum / version.desc are
+    # missing. For existing dirs (glibc/2.12.1), our extra .patch files also
+    # get skipped because the hunk for that dir was generated when ct-ng
+    # source was unpacked, before we cp'd patches in.
+    #
+    # Workaround: post-install, cp our entire backport tree into ct-ng's
+    # installed packages/ dir. ct-ng's runtime reads from
+    #   ${CT_NG_PREFIX}/share/crosstool-ng/packages/<pkg>/<ver>/
+    # so this is exactly the right destination.
+    INSTALLED=/opt/ct-ng-1.25/share/crosstool-ng/packages; \
+    # Wholesale dirs (didn't exist in ct-ng 1.25 install at all)
+    cp -r /tmp/gcc15-backport/packages/gcc/15.2.0 ${INSTALLED}/gcc/; \
+    cp -r /tmp/gcc15-backport/packages/gdb/16.3 ${INSTALLED}/gdb/; \
+    # Existing dirs — only need to cp the *.patch files we added
+    # (Docker RUN default shell is /bin/sh = dash; no `compgen`. Use plain
+    # glob + `|| true` so missing patches don't fail.)
+    cp -v /tmp/gcc15-backport/packages/glibc/2.12.1/*.patch \
+        ${INSTALLED}/glibc/2.12.1/ 2>/dev/null || true; \
+    cp -v /tmp/gcc15-backport/packages/binutils/2.38/*.patch \
+        ${INSTALLED}/binutils/2.38/ 2>/dev/null || true; \
+    \
+    # Verify: rtld + csu + nptl + morestack patches all landed in install dir
+    test -f ${INSTALLED}/glibc/2.12.1/0001-tls-x86_64-fix-imm-mode-movq-gcc15.patch; \
+    test -f ${INSTALLED}/glibc/2.12.1/0002-csu-Makefile-disable-cfi-in-initfini-gcc15.patch; \
+    test -f ${INSTALLED}/glibc/2.12.1/0003-nptl-Makefile-disable-cfi-in-pt-initfini-gcc15.patch; \
+    test -f ${INSTALLED}/gcc/15.2.0/chksum; \
+    test -f ${INSTALLED}/gcc/15.2.0/0001-libgcc-generic-morestack-guard-NR-mmap2.patch; \
+    test -f ${INSTALLED}/gdb/16.3/chksum; \
+    \
+    # cleanup source — keep image small
+    cd /tmp; \
+    rm -rf crosstool-ng-1.25.0 ct-ng-1.25.0-release.tar.xz; \
+    \
+    # sanity: print ct-ng version + confirm both backports visible
+    /opt/ct-ng-1.25/bin/ct-ng version | head -1; \
+    /opt/ct-ng-1.25/bin/ct-ng list-versions GCC 2>/dev/null | grep -E "(11.2.0|15.2.0)" || \
+        echo "INFO: list-versions GCC didn't print 15.2.0 — defconfig will tell us if metadata is OK"; \
+    /opt/ct-ng-1.25/bin/ct-ng list-versions GDB 2>/dev/null | grep -E "(11.2|16.3)" || \
+        echo "INFO: list-versions GDB didn't print 16.3 — same as above"
+
+ENV PATH=/opt/ct-ng-1.25/bin:$PATH
+
+# -----------------------------------------------------------------------------
+# ENTRYPOINT: runs ct-ng for one target, gated by host-supplied defconfig name.
+# Logs + tarball cache + toolchain output all go to /build (volume-mounted on
+# host) so the host can read them after the container exits — even on failure.
+#
+# Run ct-ng build is NOT done here at image-build time — see workflow comment
+# at top of file. Iteration is via `docker run` against the same image.
+# -----------------------------------------------------------------------------
+USER root
+COPY --chmod=755 scripts/docker-build-target.sh /usr/local/bin/docker-build-target.sh
+USER ctuser
+
+WORKDIR /build
+ENTRYPOINT ["/usr/local/bin/docker-build-target.sh"]
