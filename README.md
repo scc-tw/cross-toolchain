@@ -7,10 +7,13 @@ This repository contains the Dockerfiles, build configurations, and patches that
 - `docker.io/leavevm0cl6/cross-toolchain` — five cross-toolchains plus Go and libbpf
 - `docker.io/leavevm0cl6/ebpf-builder` — companion image for compiling eBPF programs
 
-[![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](./LICENSE)
-[![Docker Pulls](https://img.shields.io/docker/pulls/leavevm0cl6/cross-toolchain.svg)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain)
-[![Image Size](https://img.shields.io/docker/image-size/leavevm0cl6/cross-toolchain/latest)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain)
-[![Image Version](https://img.shields.io/docker/v/leavevm0cl6/cross-toolchain?sort=semver)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain/tags)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg?logo=gnu&logoColor=white)](./LICENSE)
+[![Docker Pulls](https://img.shields.io/docker/pulls/leavevm0cl6/cross-toolchain.svg?logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain)
+[![Image Size](https://img.shields.io/docker/image-size/leavevm0cl6/cross-toolchain/latest?logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain)
+[![Image Version](https://img.shields.io/docker/v/leavevm0cl6/cross-toolchain?sort=semver&logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain/tags)
+[![GCC](https://img.shields.io/badge/GCC-15.2.0-FF6F00?logo=gnu&logoColor=white)](https://gcc.gnu.org/gcc-15/)
+[![Clang](https://img.shields.io/badge/Clang-18-262D3A?logo=llvm&logoColor=white)](https://releases.llvm.org/18.1.0/tools/clang/docs/ReleaseNotes.html)
+[![Go](https://img.shields.io/badge/Go-1.22.12-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/devel/release#go1.22.minor)
 
 
 ## Quick start
