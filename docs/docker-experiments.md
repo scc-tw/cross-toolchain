@@ -240,19 +240,53 @@ diff _logs/run-20260509-111052-7981/.config _logs/run-20260509-100355-7128/.conf
 
 **目前累積了 21 個 run dir**（全天從 6:27 跑到 19:25 local time），沒有任何被覆蓋。早先的「log 只剩 latest 跟一個」是 entrypoint 還沒加 per-run id 之前的舊狀態，現在已修。
 
-**已修 smoke test bug**（5/9 修）：原本 `awk '/^CT_TARGET=/{print $2}' .config` 想抓 target tuple，但 ct-ng 的 `.config` **根本沒有 `CT_TARGET=` 這行** — `CT_TARGET` 是 ct-ng build script 內部從 `CT_ARCH` + `CT_TARGET_VENDOR` + `CT_KERNEL` + `CT_LIBC` 組出來的 derived value，不是 kconfig 設定。awk 抓不到 → TARGET=空字串 → `${PREFIX_TEMPLATE/\$\{CT_TARGET\}/}` 替換成空 → PREFIX = `/opt/x-tools/`，GCC_BIN = `/opt/x-tools//bin/-gcc`（雙斜線）→ 不存在 → exit 1。即使 ct-ng build 100% 成功，`run-summary.txt` 仍會說 `exit=1`。
+### 已修 bug：smoke test 假陽性退出碼（2026-05-09 修）
 
-**修法**：不從 `.config` 抓 TARGET，改從**剛 build 完的安裝目錄**反推：
+**Bug 出在哪**：container 內的 entrypoint script `scripts/docker/container/docker-build-target.sh`。這個 script 跑完 `ct-ng build` 後會做一輪 smoke test（呼 `gcc --version`、檢查 libc.so.6 存在等），結束時把 exit code 寫進 `run-summary.txt` 的 `exit=` 欄位給外部 monitor 用。
+
+**症狀**：5/9 之前，**即便 ct-ng build 100% 成功、產物完整**，`run-summary.txt` 仍會寫 `exit=1`。`grep 'exit=[1-9]' _logs/*/run-summary.txt` 撈出來幾乎都是這個偽陽性，真的 build 失敗被淹沒。
+
+**根因**：smoke test 要呼 `${PREFIX}/bin/${TARGET}-gcc`，需要先知道 `TARGET` 是什麼。原寫法：
+
+```bash
+TARGET=$(awk -F'"' '/^CT_TARGET=/{print $2}' .config)        # ← 永遠抓不到
+PREFIX_TEMPLATE=$(awk -F'"' '/^CT_PREFIX_DIR=/{print $2}' .config)
+PREFIX="${PREFIX_TEMPLATE//\$\{CT_TARGET\}/$TARGET}"
+GCC_BIN="${PREFIX}/bin/${TARGET}-gcc"
+```
+
+問題是 **ct-ng 的 `.config` 根本沒有 `CT_TARGET=` 這行**。`CT_TARGET` 是 ct-ng build script 內部從 `CT_ARCH` + `CT_TARGET_VENDOR` + `CT_KERNEL` + `CT_LIBC` 等 kconfig 設定**組出來的 derived value**，不是 user 設的 kconfig 值，所以不會出現在 `.config`。
+
+**症狀鏈**：
+
+```
+awk 抓不到          → TARGET=""
+shell expansion    → PREFIX_TEMPLATE="/opt/x-tools/${CT_TARGET}"
+                     ${CT_TARGET} 被替換成空字串
+                     → PREFIX="/opt/x-tools/"
+GCC_BIN 組裝        → "/opt/x-tools//bin/-gcc"  ← 中間雙斜線、target 缺
+[[ -x "$GCC_BIN" ]] → false
+script              → exit 1
+run-summary.txt    → exit=1
+```
+
+ct-ng 那邊毫無問題，是 script 自己 smoke test 階段組錯路徑。
+
+**修法**：不從 `.config` 抓 derived value，改從**剛 install 完的目錄結構反推**：
 
 ```bash
 PREFIX_TEMPLATE=$(awk -F'"' '/^CT_PREFIX_DIR=/{print $2}' .config)
-PREFIX_PARENT=$(dirname "${PREFIX_TEMPLATE}")    # /opt/x-tools
+PREFIX_PARENT=$(dirname "${PREFIX_TEMPLATE}")           # "/opt/x-tools"
 PREFIX=$(ls -1dt "${PREFIX_PARENT}"/*/ 2>/dev/null | head -1)
 PREFIX="${PREFIX%/}"
 TARGET=$(basename "${PREFIX}")
 ```
 
-`ls -t` 拿 mtime 最新的子目錄 — ct-ng 剛裝完一定是最新的。Phase 2/3 換 arch 不用改邏輯。教訓：**exit code 是 script 跟外界溝通成敗的協議，撒謊一次整條自動化鏈都不可信**（火警警報壞掉效應）。
+邏輯：`CT_PREFIX_DIR` 的 parent 目錄（`/opt/x-tools/`）下會有 ct-ng 剛裝好的子目錄。`ls -t` 按 mtime 倒排取第一個——剛 install 完的一定最新。`basename` 拿到目錄名就是 target tuple（例如 `x86_64-centos6-linux-gnu`）。
+
+Phase 2/3 換 arch（aarch64-centos7、x86_64-centos7）不用改邏輯，反正都是「找最新裝好的」。
+
+**教訓**：exit code 是 script 跟外界溝通成敗的協議。撒謊一次（build 成功但回報 1），整條自動化鏈都不可信——「火警警報壞掉效應」。`grep exit=1` 撈出來 99% 是這 bug 的偽陽性，真的失敗被淹沒，反而要靠人眼看 build.log 才認得出哪個是真壞。改完後 `exit=` 跟 ct-ng 實際成敗一致，grep 才有意義。
 
 ### 「有 mount 為什麼還要 cp？」
 
@@ -680,10 +714,10 @@ crt1.o → crti.o → crtbegin.o → [你的 .o] → crtend.o → crtn.o
 
 | 檔案 | 提供者 | 內容 |
 |------|--------|------|
-| `crt1.o` (or `Scrt1.o` for PIE) | glibc | `_start` 真正 entry point；call `__libc_start_main` |
+| `crt1.o` (or `Scrt1.o` for PIE) | glibc | `_start` 真正 entry point；call `__libc_start_main(main, argc, argv, __libc_csu_init, __libc_csu_fini, rtld_fini, stack_end)` |
 | `crti.o` | glibc | `_init` / `_fini` function 的**開頭** (function prologue) |
-| `crtbegin.o` | GCC | `.init_array` / `.fini_array` table 的**開頭** sentinel + C++ ctor 表頭 |
-| `crtend.o` | GCC | 上面的**結尾** sentinel |
+| `crtbegin.o` | GCC | 老 `.ctors` 機制的 head sentinel + C++ DSO ctor 註冊 glue（**不** 提供 `.init_array` sentinel——那是 linker script 的事，見下面） |
+| `crtend.o` | GCC | 對應 `.ctors` 機制的 tail sentinel |
 | `crtn.o` | glibc | `_init` / `_fini` function 的**結尾** (function epilogue) |
 
 #### 3. `_init` / `_fini` 是怎麼被「拼出來」的（最關鍵）
@@ -694,6 +728,8 @@ binary 內希望有個 `_init` function，**內容是「依序呼叫所有 ctor�
 _init:
     push %rbp                ← 開頭 (來自 crti.o)
     mov  %rsp, %rbp
+    sub  $0x8, %rsp          ← stack alignment (16-byte boundary)
+    call __gmon_start__@plt  ← gprof profiling hook (crti.o 內有 PREINIT_FUNCTION)
     
     call my_init             ← 中間 (你的 .o 塞)
     call _foo_setup_ctor     ← (libfoo 塞)
@@ -702,6 +738,8 @@ _init:
     leave                    ← 結尾 (來自 crtn.o)
     ret
 ```
+
+> 真實 binary 的 `_init` 開頭除了 `push %rbp; mov %rsp, %rbp` 之外，還會有 `sub $0x8, %rsp` 對齊 stack（System V x86_64 ABI 要求進 function 時 `%rsp` 16-byte aligned）跟 `call __gmon_start__@plt`（profiling hook，若沒 link `-pg` 就 weak undef）。Doc 上面那段為了講清楚 section concatenation 機制簡化掉。後期 glibc 版本的 epilogue 也從 `leave; ret` 改成 `add $0x8, %rsp; ret`。
 
 **問題**：開頭結尾來自 glibc，中間來自每個 `.o`，怎麼把這些拼成一個 function？
 
@@ -723,18 +761,24 @@ crtn.o 的 .init:         leave; ret                    ← 結尾
 
 問題：怎麼產一個只含「function 開頭」的 `.o`？assembly 沒這 syntax (function 必須完整)。
 
-**glibc 做法**：寫 1 份 C 檔 `csu/initfini.c` 同時定義 `_init` + `_fini` (中間故意空)，讓 GCC 編成 assembly，**用 sed 切兩半**：
+**glibc 做法**：寫 1 份 C 檔 `csu/initfini.c` 同時定義 `_init` + `_fini` (中間故意空)，讓 GCC 編成 assembly，**用 sed 切兩半**。實際的 marker 是 C 註解 wrapped 在 `asm()` 內（注意 `PROLOG` / `EPILOG` 拼法，不是 `PROLOGUE`）：
 
 ```c
-// glibc csu/initfini.c
+// glibc csu/initfini.c (simplified)
+__asm__ ("\n/*@HEADER_ENDS*/");
+
 void _init(void) {
-    asm("# GCC PROLOGUE END");      ← marker (給 sed 認)
-    asm("# GCC EPILOGUE BEGIN");
+    __asm__ ("\n/*@_init_PROLOG_ENDS*/");
+    /* contents intentionally empty — body comes from each .o's .init section */
+    __asm__ ("\n/*@_init_EPILOG_BEGINS*/");
 }
+
 void _fini(void) {
-    asm("# GCC PROLOGUE END");
-    asm("# GCC EPILOGUE BEGIN");
+    __asm__ ("\n/*@_fini_PROLOG_ENDS*/");
+    __asm__ ("\n/*@_fini_EPILOG_BEGINS*/");
 }
+
+__asm__ ("\n/*@TRAILER_BEGINS*/");
 ```
 
 GCC 編 (GCC 14 之前的乾淨 output)：
@@ -742,12 +786,16 @@ GCC 編 (GCC 14 之前的乾淨 output)：
 ```asm
 _init:
     push %rbp                  ┐ sed 抽這段 → crti.S 的 .init
-    mov  %rsp, %rbp            ┘
-    # GCC PROLOGUE END
-    # GCC EPILOGUE BEGIN
+    mov  %rsp, %rbp            ┘ (PROLOG: HEADER_ENDS … _init_PROLOG_ENDS)
+    /*@_init_PROLOG_ENDS*/
+    /*@_init_EPILOG_BEGINS*/
     leave                      ┐ sed 抽這段 → crtn.S 的 .init
-    ret                        ┘
+    ret                        ┘ (EPILOG: _init_EPILOG_BEGINS … _fini_PROLOG_ENDS)
 ```
+
+sed script 用 `@HEADER_ENDS` / `@_init_PROLOG_ENDS` / `@_init_EPILOG_BEGINS` / `@_fini_PROLOG_ENDS` / `@_fini_EPILOG_BEGINS` / `@TRAILER_BEGINS` 這 6 個 marker 分塊抽出對應 segment 寫進 crti.S / crtn.S。
+
+> Source: [glibc 2.2 csu/initfini.c](https://git.zx2c4.com/glibc/tree/csu/initfini.c?h=glibc-2.2&id=0111b22411a97d6e8357eb97c1b71e5cd84b9102)（glibc 2.12 沿用同 scheme）。Doc 之前寫 `# GCC PROLOGUE END` 是我憑印象寫的、是錯的，已修正。
 
 assembler 編 crti.S → crti.o；crtn.S → crtn.o。
 
@@ -782,7 +830,9 @@ mov %rsp, %rbp
 
 #### 6. GCC 15 為什麼讓 sed 切片爆掉
 
-GCC 15 預設 `-fasynchronous-unwind-tables` (原本要 opt-in)。所有 function **預設加 CFI directive**：
+> ⚠ 修正：`-fasynchronous-unwind-tables` 在 x86_64-linux-gnu **早就是 default**（至少 GCC 4.x era 起，遠早於 GCC 15）。Doc 之前寫「GCC 15 才設 default」是錯的。2018 那波是把它擴到 AArch64 跟 PowerPC，x86_64 本來就有。GCC 15 對這個 build 真正的影響是更 **aggressive 的 CFI 自動 emit**——包括 sed 切的 initfini.c 這種 edge case；早期 GCC 對 `csu/initfini.c` 的特殊 build flag (`-g0 -fPIC -fno-inline-functions`) 也許剛好閃過 CFI emit，GCC 15 不再放過。
+
+實際表現：GCC 15 對所有 function **預設加 CFI directive**：
 
 ```asm
 _init:
@@ -790,13 +840,13 @@ _init:
     push %rbp
     .cfi_def_cfa_offset 16    ← ★
     ...
-    # GCC PROLOGUE END        ← sed 抽到這就停
-    # GCC EPILOGUE BEGIN
+    /*@_init_PROLOG_ENDS*/    ← sed 抽到這就停（取 PROLOG segment）
+    /*@_init_EPILOG_BEGINS*/  ← sed 從這裡開始下一段
     ...
-    .cfi_endproc             ← ★ (在 marker 之後，sed 沒抽到)
+    .cfi_endproc             ← ★ (function 結尾才 emit；夾在 EPILOG segment 結束之後)
 ```
 
-sed 抽 crti.S：
+sed 抽 crti.S 的 `.init` section（`@HEADER_ENDS` ~ `@_init_PROLOG_ENDS`）：
 
 ```asm
 _init:
@@ -809,7 +859,9 @@ _init:
 
 assembler 編 crti.S → 撞 `Error: open CFI at the end of file; missing .cfi_endproc directive`。
 
-**fix**: csu/Makefile 加 `-fno-asynchronous-unwind-tables` → GCC 15 退化回不產 CFI 的乾淨 output → sed 切片正確。
+**fix**：兩個 Makefile（`csu/Makefile` + `nptl/Makefile`）的 `CFLAGS-initfini.s` / `CFLAGS-pt-initfini.s` 都加 **`-fno-asynchronous-unwind-tables -fno-unwind-tables`** 兩個 flag。單獨一個 `-fno-asynchronous-unwind-tables` 在現代 GCC 不足以完全壓掉 `.cfi_*` directive（只降低 unwind table 精度，CFI 還是會 emit），要兩個一起才能讓 GCC 退回不產 CFI 的乾淨 output → sed 切片正確。Patch 在 `patches/ct-ng-1.25-gcc15-backport/packages/glibc/2.12.1/0002-csu-Makefile-disable-cfi-in-initfini-gcc15.patch` 跟 `0003-nptl-Makefile-disable-cfi-in-pt-initfini-gcc15.patch`。
+
+> 注：理論上 `-fno-dwarf2-cfi-asm` 是最直接「禁 CFI directive」的 flag（GCC docs），但實測 `-fno-async... + -fno-unwind...` 組合對 glibc 2.12 initfini.c 的 case 就夠用，沒必要再加。
 
 #### 7. `__attribute__((constructor))` / `.init_array` (modern 機制)
 
@@ -824,37 +876,117 @@ GCC 編這段：
 1. 正常產 `my_init` function 機器碼
 2. **產一個 function pointer 指向 `my_init`，放 `.init_array` section**
 
-linker 把所有 `.o` 的 `.init_array` section 串起來成一個 array。crtbegin.o + crtend.o 提供 sentinel:
+linker 把所有 `.o` 的 `.init_array` section 串起來成一個連續陣列。**邊界符號 `__init_array_start` / `__init_array_end` 由 default linker script（GNU ld 提供）`PROVIDE_HIDDEN` 出來**，指向 section 起點 / 終點位址——不是 crtbegin.o / crtend.o 內塞 entry：
 
 ```
 .init_array section in final binary:
-    [&__init_array_start]   ← crtbegin.o 提供
-    [&my_init]              ← 你的
-    [&_other_ctor_from_libfoo]
-    [&__init_array_end]     ← crtend.o 提供
+__init_array_start ─→ [&my_init]              ← 你的 .o
+                      [&_other_ctor_from_libfoo]
+                      [&_another_ctor]
+__init_array_end ───→ (這裡是 section 結尾位址，不是 array entry)
 ```
 
-`__libc_start_main` 在 main 之前**走訪這 array** 一個個 call：
+Default linker script（`ld --verbose` 可看）的相關段落：
+
+```
+.init_array :
+{
+    PROVIDE_HIDDEN (__init_array_start = .);
+    KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
+    KEEP (*(.init_array EXCLUDE_FILE (*crtbegin.o *crtbegin?.o *crtend.o *crtend?.o ) .ctors))
+    PROVIDE_HIDDEN (__init_array_end = .);
+}
+```
+
+注意 `EXCLUDE_FILE (*crtbegin.o *crtend.o ...)` ——linker script 顯式把 crtbegin/crtend 自己的 `.ctors` / `.init_array` 排除掉，只用 boundary 位置算 sentinel。**crtbegin.o / crtend.o 對 modern `.init_array` 沒貢獻** sentinel；它們是給 legacy `.ctors` 機制用的。
+
+> Doc 之前寫「crtbegin.o + crtend.o 提供 sentinel」是錯的（混淆 `.ctors` 跟 `.init_array` 兩個機制），已修正。Source: [MaskRay: .init, .ctors, and .init_array](https://maskray.me/blog/2021-11-07-init-ctors-init-array)。
+
+`__libc_start_main` 在 main 之前透過 `__libc_csu_init`（glibc 2.34 之後改名為 `csu/libc-start.c` 內的 static `call_init`）**走訪這 array** 一個個 call：
 
 ```c
-for (fn = __init_array_start; fn < __init_array_end; fn++) {
-    (*fn)();
-}
-main(argc, argv, envp);
+/* glibc 2.12: csu/elf-init.c 內 __libc_csu_init */
+size_t i;
+const size_t size = __init_array_end - __init_array_start;
+for (i = 0; i < size; i++)
+    (*__init_array_start[i])(argc, argv, envp);  /* ← 帶 argc/argv/envp，不是 () */
+/* ... then __libc_start_main calls main(argc, argv, envp) */
 ```
 
-**`.init_array` vs `.init` 差別**：
+注意兩件事：
+1. `.init_array` entry 被 call 時**會帶 `(argc, argv, envp)` 三個參數**——`__attribute__((constructor))` 寫的函式收 `void` 是因為 C ABI 允許「caller 傳的參數比 callee 宣告的多」，多的被忽略。但你也可以寫 `__attribute__((constructor)) void f(int argc, char **argv, char **envp)` 把它們取出來。
+2. `.fini_array` 是**反向**走訪（`for (i = size; i > 0; i--)`）達到 LIFO destructor order。
+
+> Source: [glibc-2.12 csu/elf-init.c](https://github.com/bminor/glibc/blob/glibc-2.12/csu/elf-init.c)。Doc 之前寫 `(*fn)()` 沒帶參數是不準的，已修正。
+
+**`.init_array` vs `.init` — 兩條獨立機制，但常並存**
+
+下面這張表比「**單獨啟用該機制時**」各自做什麼（純概念對照）。實際 binary 內**兩個通常都在**，見表後說明：
 
 | | 老 `.init` 機制 | 新 `.init_array` 機制 |
-|--|----------------|---------------------|
-| 各 .o 提供 | raw 機器碼 (`call x` 指令) | function pointer (資料) |
-| 拼起來變成 | function body | array of pointers |
-| `_init` function | 自己被切兩半 (crti+crtn) | **不存在這 function 了**；中央 dispatcher 在 glibc 內 |
-| 需要 sed 切片 | ✓ | ✗ |
-| `.init_array` 是 **data** section，**沒 CFI 問題** | | |
+|---|---|---|
+| 各 `.o` 貢獻什麼 | raw 機器碼（`call x` 指令） | function pointer（資料） |
+| linker 串起來變成 | 一個合法的 `_init` function body | 一個 function pointer array |
+| 啟動時誰執行 | dynamic loader 直接 call `_init` | `__libc_start_main` walk array 一個個 call |
+| crti.o / crtn.o 角色 | `_init` / `_fini` 的開頭結尾 | 無（不靠這條鏈） |
+| crtbegin.o / crtend.o 角色 | 無 | array 的 sentinel（`__init_array_start` / `_end`） |
+| 需要 sed 切片 build crti/crtn | ✓（Phase 1 #9 #11 雷的根源） | ✗ |
+| section 性質 | code section（有 CFI 問題） | data section（沒 CFI 問題） |
 
-兩個並存：binary 跑時 `.init` 跟 `.init_array` 都會跑（先後順序由 dynamic loader 決定）。glibc 2.34+ 完全砍掉 `.init` 改用純 `.init_array`，但 glibc 2.12 (我們用的) 兩個都產。
+**實際 binary 內：兩個機制並存（在 glibc 2.12 era）**
 
+glibc 2.12（你 Phase 1 用的版本）**兩條鏈都 wire 起來**——`_init` function 還在，`.init_array` 也在。binary 啟動完整順序：
+
+```
+kernel exec → ld.so 載入 binary、jump 到 _start (in crt1.o)
+└─→ _start (assembly)：prepare args，call __libc_start_main(
+        main, argc, argv,
+        __libc_csu_init,    ← 把 init dispatcher 當參數傳進去
+        __libc_csu_fini,
+        rtld_fini, stack_end)
+    └─→ __libc_start_main：環境設置、tls init 等
+        └─→ call __libc_csu_init(argc, argv, envp)：
+            ├─→ call _init             ← 老機制：crti + 各 .o init + crtn 串起來的 function
+            │                            （透過 binary 的 DT_INIT entry 找到 _init 位址）
+            └─→ walk .init_array       ← 新機制：array entries 依序
+                                          call(argc, argv, envp)
+        └─→ call main(argc, argv, envp)
+        └─→ main return → exit → __libc_csu_fini
+            ├─→ walk .fini_array (反向)
+            └─→ call _fini
+```
+
+→ `_init` 跟 `.init_array` 兩條都跑，但是**先 `_init` 才 walk `.init_array`**，由 `__libc_csu_init` 順序串起來。`_init` 透過 binary 的 ELF dynamic section `DT_INIT` entry 找到位址。
+
+`__attribute__((constructor))` 跟 C++ 全域物件 ctor 預設都進 `.init_array`（新機制）；理論上你也能用 `asm(".section .init")` 手寫 raw assembly 塞進老 `.init` section，但實務上沒人這樣寫。
+
+**版本切換點（web research 2026-05 double-confirmed）**
+
+我之前在這寫「glibc 2.34+ 完全砍掉 `_init` / `.init` section」是**錯的**，查 glibc git log + 看 master `sysdeps/x86_64/crti.S` 後修正：
+
+| glibc 版本 | `_init` function 還在 binary 內？ | `crti.S` / `crtn.S` 還在？ | 生成方式 | Phase 1 #9 #11 雷？ |
+|---|---|---|---|---|
+| **2.12（我們）** | ✓ 有 | ✓ 有 | `csu/initfini.c` 寫 C → GCC `-S` → **sed 切**成 crti.S / crtn.S | **存在**——GCC 15 自動加 CFI 把 sed 切片切壞 |
+| **2.32** ([commit 783e641f](https://github.com/bminor/glibc/commit/783e641fbae0cd1ab32d278216247a6f793dd722)) | ✓ 還在 user binary | ✓ 還在 | csu/initfini.c 已被冷凍（Makefile 不再 reference），crti.S/crtn.S 改 **hand-written `.S` assembly 直出**——不再經過 C+sed | 不存在 |
+| **2.34** ([commit 035c012e](https://github.com/bminor/glibc/commit/035c012e32c11e84d64905efaf55e74f704d3668)) | ✓ 還在 user binary | ✓ 還在（master 仍然 emit `_init:` label，內有 `_CET_ENDBR; subq $8, %rsp`） | 同上 | 不存在 |
+| **2.34** 額外動了 | — | — | 砍掉 `csu/elf-init.c` 內的 `__libc_csu_init` / `__libc_csu_fini`（dispatcher），改由 `csu/libc-start.c` 的 static function `call_init` walk `.init_array` | — |
+
+→ 修正後的 mental model：
+
+1. **`_init` function 跟它的 `push %rbp` prologue / `leave; ret` epilogue 從來沒被砍掉**。glibc 2.34+ 的 `crti.S` 主檔還在，binary 內 `_init` 還在被 emit，只是現代 user binary 啟動時這個 function 不太被 call（dynamic loader / `__libc_start_main` 主走 `.init_array` 那條 path）。
+2. **被砍掉的是 `csu/initfini.c` 的 C+sed build path**。2.32 之後 `crti.S` 變成 hand-written assembly 直接寫死 prologue，不再從 C source 切。所以 Phase 1 #9 #11 那種「GCC 加 CFI directive 把 sed 切片切壞」**不可能發生**——根本沒 sed。
+3. **`.init_array` 不是「整合了 prologue 進去」**。它是一條完全獨立的 path：array of function pointers（data section，沒 prologue/epilogue 概念），由一個普通函式 `call_init`（在 `csu/libc-start.c`）走訪 array、逐一 call。`call_init` 自己當然有 prologue/epilogue，但它是正常 C function 編出來、沒 sed 切，所以 GCC 加多少 CFI 都不會炸。
+
+> 直接回答「新版的也沒有 push rbp 那個 .s 片段，還是整合到 init_array 了」這個問題：**新版仍然有 push rbp 那段 .s 片段**——只是 2.32 之後 `crti.S` 變成直接 hand-written assembly，不再透過 C+sed 產生。`.init_array` 是完全獨立的另一條啟動 path，並沒有把 prologue 整合進去；它根本不需要 prologue（因為它是 data 不是 function body）。
+
+**為什麼我們 build 還會撞 #9 #11**：我們用 glibc **2.12**，還在 C+sed 那個老 path 上。如果今天 ct-ng 1.28 + glibc 2.34 + GCC 15 就完全沒這雷——因為 sed 切片那條 code path 已經被 glibc 2.32 廢掉，crti.S 改成手寫 assembly。
+
+**Sources**：
+- [glibc 2.34 NEWS / BZ #23323](https://raw.githubusercontent.com/bminor/glibc/glibc-2.34/NEWS)
+- [砍 `__libc_csu_init` 的 commit (2.34)](https://github.com/bminor/glibc/commit/035c012e32c11e84d64905efaf55e74f704d3668)
+- [`libc.so` 內 `_init` → ELF constructor (2.32)](https://sourceware.org/pipermail/glibc-cvs/2020q1/069007.html)
+- [現役 master 的 `crti.S` 證據（仍 emit `_init`）](https://github.com/bminor/glibc/blob/master/sysdeps/x86_64/crti.S)
+- [ct-ng 同類 issue（glibc 老版 + GCC 新版 CFI/sed 衝突）](https://github.com/crosstool-ng/crosstool-ng/issues/1213)
 #### 8. Preprocessor macro: `__FILE__` 怎麼從 source 變 binary 內字串
 
 這是 Phase 1 + 部署時 path leak 的關鍵。
@@ -992,8 +1124,7 @@ __libc_start_main (glibc)
 **決定**：linux/arm64 native。
 
 **Reference**：
-- OrbStack issue #792 (Rosetta 34% slower)：<https://github.com/orbstack/orbstack/issues/792>
-
+- [OrbStack issue #792 (Rosetta 34% slower)](https://github.com/orbstack/orbstack/issues/792)
 ### 決策 3：3 個 ct-ng 共存路線（**主軸是實驗，不是 Plan A**）
 
 **主軸（user 指定）**：ct-ng 1.25 + CentOS 6 + GCC 15
@@ -1049,7 +1180,7 @@ User 的 deployment target 是 CentOS 6（glibc 2.12 / kernel 2.6.32）— 16 �
 **所以**：要 GCC 15 + glibc 2.12，1.25 / 1.26 / 1.27 / 1.28 任一單一版都不行 → **必須 1.25 backport GCC 15**。
 
 **Reference**：
-- ct-ng releases：<https://github.com/crosstool-ng/crosstool-ng/releases>
+- [ct-ng releases](https://github.com/crosstool-ng/crosstool-ng/releases)
 - 1.28.0 packages/gcc 列表：[GitHub API tree](https://api.github.com/repos/crosstool-ng/crosstool-ng/contents/packages/gcc?ref=crosstool-ng-1.28.0)
 - 1.25.0 packages/glibc 列表（含 2.12.1）：本地 vendor tarball 解壓 `packages/glibc/` 目錄
 
@@ -1085,9 +1216,8 @@ User 的 deployment target 是 CentOS 6（glibc 2.12 / kernel 2.6.32）— 16 �
 - 現有 defconfig 已有：`CT_GLIBC_EXTRA_CFLAGS="-Wno-error -Wno-array-bounds ..."` 但**只是 GCC 11 時代為 glibc 2.12 設的**，GCC 15 可能要再加幾個
 
 **Reference**：
-- GCC 14 release notes，C 嚴格化：<https://gcc.gnu.org/gcc-14/changes.html>
-- GCC 15 release notes：<https://gcc.gnu.org/gcc-15/changes.html>
-
+- [GCC 14 release notes，C 嚴格化](https://gcc.gnu.org/gcc-14/changes.html)
+- [GCC 15 release notes](https://gcc.gnu.org/gcc-15/changes.html)
 **risk #2：ct-ng 1.25 build script 不認得 GCC 15 新 configure flag**
 - `scripts/build/cc/100-gcc.sh` 在 1.25 寫於 GCC 11 時代
 - GCC 12+ 加了 `--enable-host-pie`、GCC 13+ 加 `--enable-host-bind-now` 等
@@ -1106,8 +1236,7 @@ User 的 deployment target 是 CentOS 6（glibc 2.12 / kernel 2.6.32）— 16 �
 - 業界沒看到「GCC 15 + glibc 2.12 from source」的成功案例 → 我們可能是第一個試的，得做好**失敗也算學到知識**的心理準備
 
 **Reference**：
-- AmanoTeam/obggcc 支援表：<https://github.com/AmanoTeam/obggcc#supported-distributions>
-
+- [AmanoTeam/obggcc 支援表](https://github.com/AmanoTeam/obggcc#supported-distributions)
 ---
 
 ## Phase 2：ct-ng 1.28 + CentOS 7 arm64 + GCC 15（副軸 1）
@@ -1134,58 +1263,216 @@ CentOS 7 EOL 是 2024-06，但 ABI floor (glibc 2.17) 不會變，這個 toolcha
 | GDB | 16.3 + **gdbserver 開** | aarch64 沒 multilib → 沒 Phase 1 那條 RAX 衝突，可放心開 gdbserver 給 VSCode remote debug 用 |
 | multilib | **不開** | aarch64 沒對應 32-bit |
 
-### 2.3 Error #22：kconfig 大小寫 silent fallback (5/9)
+### 2.2.5 kconfig 速覽：先搞懂這個系統，下面兩個 error 才會清楚
 
-**Survey 發現點**：寫 defconfig 時憑印象用 `CT_ARCH_arm=y` (小寫 arm) — **錯**。kconfig 是 case-sensitive，正解是 `CT_ARCH_ARM=y`（大寫）。
+接下來 Error #22 跟 #23 都是踩到 kconfig 的雷。沒接觸過 Linux kernel build system 的讀者先看這節。
 
-**症狀**：`ct-ng defconfig` 沒 error，build 跑完 10 分鐘後才發現 install 路徑是 `/opt/x-tools/alphaev4-centos7-linux-gnu/`（**DEC Alpha 21064，1992 年的 CPU**）。ct-ng silently fallback 到 choice 的 alphabetical 第一個 = `alpha`。
+#### 什麼是 kconfig
 
-**根因鏈**：
-1. defconfig 寫 `CT_ARCH_arm=y`
-2. kconfig 不認這個 symbol，當作沒設
-3. `choice` 沒人選 → fallback 到 `default`
-4. ct-ng 1.28 `config/gen/arch.in` 的 `choice ARCH` 沒明設 default
-5. kconfig 自動取 alphabetically 第一個 → `ARCH_ALPHA`
-6. ct-ng 老老實實編 alpha toolchain
+kconfig 是 **Linux kernel 用的設定管理系統**——你裝過 kernel 就看過 `make menuconfig` 那個藍底白字的 TUI，背後就是 kconfig。它做四件事：
 
-**怎麼提早發現**：跑 ct-ng 後立刻看 `.config` 裡的 `CT_ARCH=` 跟 `CT_TARGET=`（如果有）、或解 defconfig 後跑 `ct-ng oldconfig` 看 ct-ng 怎麼解析。
+1. **讀 `Kconfig` / `.in` 檔**：這些檔用 kconfig 自家 DSL 宣告「哪些 symbol 存在、type 是 bool/string/int、預設值、依賴」
+2. **拿 user 輸入**：兩種方式——interactive 的 menuconfig TUI，或一個 `defconfig` 文字檔（user 只寫 non-default 的值）
+3. **解析成 `.config`**：把 user 輸入 + default 合併、跑完依賴推導，產生完整 `.config` 檔
+4. **產生 build artifact**：把 `.config` 翻成 C macro header（`autoconf.h`）給 build system 用
 
-**修法**：
+#### ct-ng 跟 kconfig 的關係：兩層
+
+這條要分清楚——之前我寫「ct-ng vendor 了 kconfig」太籠統，實際是兩層：
+
+| 層 | 是什麼 | 出處 |
+|---|---|---|
+| **kconfig engine + DSL** | parser、resolver、menuconfig TUI、`.config` writer，加上 DSL 語法本身（`config` / `choice` / `if X ... endif` / `select` / `depends on` / `default` 等 keyword 怎麼解釋） | **Linux kernel 抄過來**（`kconfig/*.c`，全部 Roman Zippel 2002 copyright + SPDX GPL-2.0） |
+| **config 規則 / symbol 宣告本體** | 哪些 arch 可選、哪些 libc、哪些 GCC 版本、哪個 symbol 是哪個 sub-tree 的 master switch、symbol 之間誰 `select` 誰、誰 `depends on` 誰 | **ct-ng 自己寫的**（`config/gen/*.in`、`config/debug/*.in` 等） |
+
+語言類比：**kconfig 是 ct-ng 借來的「程式語言 + 編譯器」；`config/*.in` 是 ct-ng 用這個語言寫的「source code」**。
+
+ct-ng 自己對 engine 端的改動很少——主要是 `CONFIG_` prefix 改成 `CT_`（這樣 ct-ng 的 `.config` 不會跟 kernel 設定撞名）、build 系統從 kbuild 改成 autotools。
+
+整個流程：
+
+```
+configs/x86_64-centos6-glibc212-gcc15.defconfig   ← 你寫的精簡檔（只列 non-default）
+        │
+        │  ct-ng defconfig
+        ↓
+.config                                            ← kconfig 解析 + 推導完的完整檔
+        │
+        │  ct-ng build
+        ↓
+toolchain artifacts                                ← scripts/build/*.sh 讀 .config 跑 build
+```
+
+ct-ng 自己的 `.in` 檔散在 `config/` 目錄樹下：
+
+```
+config/
+├── gen/arch.in                    ← 列所有 target arch (alpha/arc/arm/...)
+├── gen/debug.in                   ← gdb/ltrace/strace 等 debug 工具
+├── gen/libc.in                    ← glibc/musl/uClibc/newlib 等 libc
+├── gen/comp_tools.in              ← m4/autoconf/automake/libtool/...
+├── debug/gdb.in                   ← GDB 細部選項
+├── debug/gdb.in.cross             ← 細到 cross-gdb specific
+└── ...
+```
+
+`.in` 檔之間用 `source "config/foo.in"` directive 串接，整棵 config tree 由 ct-ng 的 top-level `Kconfig` 為 root。
+
+#### 名詞對照
+
+| 名詞 | 意思 |
+|---|---|
+| **kconfig**（小寫 k） | 設定管理系統本身（parser + UI + resolver） |
+| **`.in` 檔** | kconfig 的 DSL source，宣告 symbol + 屬性。例：`config/gen/arch.in` |
+| **symbol** | 一個 kconfig 設定項，例：`ARCH_ARM`。在 `.config` / defconfig 內帶 prefix 變成 `CT_ARCH_ARM` |
+| **defconfig** | user 寫的精簡設定檔，只列 non-default 值 |
+| **`.config`** | kconfig 解析完的完整輸出，所有 symbol 最終值 |
+| **`choice` ... `endchoice`** | DSL 關鍵字，定義「一組互斥選項，必須選一個」 |
+| **`menuconfig X`** vs **`config X`** | 都宣告 symbol；差別只在 menuconfig TUI 顯示——`menuconfig` 多一個「→」表示有子選單。對 build 機制**完全等價** |
+| **`if X ... endif`** | parser-level conditional——X 不為 y 時整個 block 內部**不被 parser 處理**（連 `source` directive 都會被略過） |
+
+#### kconfig 的「silent」特性對 user 是雷
+
+kconfig 的設計目標是「**允許新版 kernel 加 symbol、舊版 defconfig 還能用**」（Linux kernel 規模 10000+ 個 option，這個 flexibility 必需）。所以 kconfig 對「找不到的 symbol」採 **silent ignore** 策略：
+
+- defconfig 寫 `CT_FOO=y`，FOO 沒在任何 `.in` 檔宣告（拼錯名、被改名、被條件排除）→ kconfig **不報錯、不 warn**，當你沒寫
+- 內部機制：[kconfig/confdata.c:432-434](https://github.com/torvalds/linux/blob/master/scripts/kconfig/confdata.c) 把找不到的 symbol 建一個 `S_UNKNOWN` phantom，強制轉成 `S_BOOLEAN`，存值——但沒人 reference 這 phantom 所以零效果
+
+對 kernel community 這設計合理（向後相容、跨版本演進），對單一 user 拼錯 symbol 就會像 Error #22 那樣**build 跑出完全不對的東西卻全程沒 error**。
+
+下面兩個 error 就是踩到這個 silent ignore：
+- **Error #22**：symbol 名拼錯大小寫 → kconfig silent ignore → `choice` 內沒人選 → fallback 到 file order 第一個
+- **Error #23**：少了 master switch → guard 後的 `if` block 整塊沒被 parser source 進來 → block 內所有 symbol 都被當 unknown → kconfig silent ignore
+
+---
+
+### 2.3 Error #22：kconfig case-sensitivity + 沒選擇時 silent fallback (5/9)
+
+**症狀**：defconfig 寫 `CT_ARCH_arm=y`（小寫 `arm`），`ct-ng defconfig` 不報 error；build 跑完 10 分鐘後才發現 install 路徑變成 `/opt/x-tools/alphaev4-centos7-linux-gnu/`——產出的是 **DEC Alpha 21064（1992 年的 CPU）** toolchain。
+
+#### 為什麼 kconfig 沒擋住？
+
+ct-ng 用 Linux kernel 的 kconfig（複製進 `kconfig/` 目錄）。載 defconfig 時走 `kconfig/confdata.c:432-434`：
+
+```c
+sym = sym_lookup(line + 2 + strlen(CONFIG_), 0);
+if (sym->type == S_UNKNOWN)
+    sym->type = S_BOOLEAN;
+```
+
+`sym_lookup` 找不到 `ARCH_arm`（kconfig 是 case-sensitive，正確 symbol 是 `ARCH_ARM`），**建一個 type=S_UNKNOWN 的 phantom symbol**，下一行強制轉成 S_BOOLEAN，存值 y——全程不 warn。這個 phantom 沒有任何其它 `.in` 檔 reference 它，所以對 build 邏輯零影響。defconfig load 完看起來「成功」，但實際你那行根本沒設到任何真實 symbol。
+
+#### 為什麼 fallback 到 alpha？
+
+看 `config/gen/arch.in`（ct-ng 1.28，**auto-generated 檔，DO NOT EDIT** 標頭）：
+
+```kconfig
+choice GEN_CHOICE_ARCH          ← line 5；注意沒有 default 子句
+    bool "Target Architecture"
+
+config ARCH_ALPHA               ← line 8（choice 內第一個 config）
+    bool "alpha"
+    ...
+config ARCH_ARC                 ← line 18
+    bool "arc"
+    ...
+config ARCH_ARM                 ← line 34
+    bool "arm"
+    ...
+endchoice                       ← line 376
+```
+
+kconfig 對 `choice` block 的 default rule（[kconfig-language.txt](https://www.kernel.org/doc/Documentation/kbuild/kconfig-language.txt)）：
+
+1. 如果 choice 內某 config 用 `default y if COND` 顯式宣告 default，用它
+2. 都沒有的話，**取 choice block 內第一個 declared config**——**file order，不是 alphabetical order**
+
+ct-ng 1.28 的 `arch.in` 開頭就標 `# DO NOT EDIT! This file is automatically generated.`——它是 build system 從 arch directory 列表自動產生，**生成時按字母排**，所以 file order 剛好等於 alphabetical。結果 line 8 是 `ARCH_ALPHA` → 被選中當 default。
+
+> ⚠ Doc 原本寫「kconfig 自動取 alphabetically 第一個」是不精確的表達。正解是**取 file order 第一個**——對 ct-ng 因為 arch.in 是 auto-gen 排序過所以結果一樣，但寫到其他 kconfig project（例如 Linux kernel 內某些 driver 的 Kconfig 不按字母排）規則會踩雷。
+
+#### 修法
+
 ```diff
 -CT_ARCH_arm=y
 +CT_ARCH_ARM=y
 ```
 
-**Reference**：ct-ng 1.28 source `config/gen/arch.in:34` (`config ARCH_ARM`)，sample defconfig `samples/aarch64-ol7u9-linux-gnu/crosstool.config` (Oracle Linux 7 update 9，跟 CentOS 7 ABI 一致)。
+#### 怎麼提早發現
 
-**教訓**：寫 defconfig 不要憑印象，**先去 ct-ng samples/ 找最接近的 reference 抄**。次選去 `config/` 直接 grep canonical symbol。
+跑 `ct-ng defconfig` 後**立刻 grep `.config`** 驗 ARCH 真的解到：
+
+```bash
+$ grep -E '^CT_ARCH_[A-Z]+=y' .config
+# 期望：CT_ARCH_ARM=y
+# bug 狀態：CT_ARCH_ALPHA=y
+```
+
+或跑 `ct-ng show-config` 把 kconfig 最終 resolve 完的值印出來看 `CT_ARCH` 跟 `CT_TARGET`。
+
+#### 教訓
+
+- 寫 defconfig **先去 `samples/<closest-target>/crosstool.config` 抄 reference**——那是已 verify 跑得起來的設定
+- 次選 `grep -rE "^config ARCH_" config/gen/arch.in` 直接撈 canonical symbol 名
+- 憑印象寫 = 等 10 分鐘看 build 出哪個 arch 才能 debug
+
+Reference：ct-ng 1.28 source `config/gen/arch.in:34`（`config ARCH_ARM`），sample `samples/aarch64-ol7u9-linux-gnu/crosstool.config`（Oracle Linux 7u9，ABI 同 CentOS 7）。
+
+---
 
 ### 2.4 Error #23：missing `CT_DEBUG_GDB=y` master switch (5/9)
 
-**症狀**：Error #22 修了大小寫，rebuild 跑完 9 分鐘 exit=0，產出 `aarch64-centos7-linux-gnu/` ✓，但 **bin/ 裡完全沒有 gdb / gdbserver**。一切其他元件正常（gcc 15.2 ELF、glibc 2.17 sysroot、所有 .a）。
+**症狀**：Error #22 修了大小寫 rebuild，9 分鐘 exit=0，產出 `aarch64-centos7-linux-gnu/` ✓，但 **bin/ 完全沒 gdb / gdbserver**。其他都正常（gcc 15.2 ELF、glibc 2.17 sysroot、所有 .a）。defconfig 已經寫了 `CT_GDB_V_16=y`、`CT_GDB_GDBSERVER=y`、`CT_GDB_CROSS=y`——但 kconfig 一個都沒認。
 
-**Survey** (5/9, 第二次踩雷後)：
+#### 為什麼 GDB 完全沒被認
 
-```
-$ grep -B2 -A5 "config DEBUG_GDB" /tmp/ct-ng-128/config/gen/debug.in
-menuconfig DEBUG_GDB             ← 注意是 menuconfig 不是 config
+看 `config/gen/debug.in:22-34`（actual ct-ng 1.28 source）：
+
+```kconfig
+menuconfig DEBUG_GDB              ← line 22
     bool "gdb"
     help
       gdb is the GNU debugger
 
-if DEBUG_GDB                      ← 後續所有 GDB 設定都在這個 if 內
+if DEBUG_GDB                       ← line 27；下面整塊靠這個 guard
     config DEBUG_GDB_PKG_KSYM
-    ...
-    source "config/debug/gdb.in.cross"
-    source "config/debug/gdb.in.native"
-endif
+        string
+        default "GDB"
+
+    source "config/versions/gdb.in"   ← CT_GDB_V_16 等 version symbol 從這 source
+    source "config/debug/gdb.in"      ← 鏈到下面
+endif                              ← line 34
 ```
 
-**根因**：kconfig 的 `menuconfig X` 表示「這是子選單入口」，沒勾它整個 `if X ... endif` block 全部失效（包括 `CT_GDB_V_16=y`、`CT_GDB_GDBSERVER=y`、`CT_GDB_CROSS=y` 全部）。我寫 defconfig 時只寫了 `CT_GDB_V_16=y` 沒寫 `CT_DEBUG_GDB=y`，等於設了一堆「藏在沒打開的選單裡的選項」 — kconfig silently 忽略。
+`config/debug/gdb.in` 再 chain 下去：
 
-**修法**：
+```kconfig
+source "config/debug/gdb.in.cross"     ← CT_GDB_CROSS, CT_GDB_CROSS_PYTHON, ...
+source "config/debug/gdb.in.native"    ← CT_GDB_GDBSERVER
+```
+
+**關鍵語意**：`if X ... endif` 是 **parser-level conditional source**。X 不是 y 時，kconfig 連 block 內部都不看，所有 `source "..."` 都被略過——**所有 GDB 子 symbol（GDB_V_16、GDB_CROSS、GDB_GDBSERVER 等）從來沒被注入 kconfig 的 symbol table**。
+
+→ user defconfig 寫 `CT_GDB_V_16=y`，kconfig 用同 Error #22 那條 code path：找不到 → 建 phantom S_UNKNOWN → 轉 S_BOOLEAN → 存值 → 零效果、零 warning。
+
+所以 `CT_DEBUG_GDB=y` 不是「也要勾的選項」，是**整個 GDB 子系統的 master switch**。沒它，user defconfig 內所有 `CT_GDB_*=y` 都是 NOP。
+
+#### `menuconfig` vs `config` 對 build 機制有差嗎？沒差
+
+| | `config X` | `menuconfig X` |
+|---|---|---|
+| `bool` prompt 行為 | 一個 checkbox | 一個 checkbox + 在 menuconfig TUI 顯示 "→" 表示有子選單 |
+| 對 `if X ... endif` 影響 | 沒差 | 沒差 |
+| 對 defconfig parsing 影響 | 沒差 | 沒差 |
+
+→ **`menuconfig` 跟 `config` 對 build 完全等價**，差別只在 menuconfig TUI 視覺。讓 GDB block guard 的是後面那個 `if DEBUG_GDB ... endif`，**不是** `menuconfig` 這字眼。
+
+> ⚠ Doc 原本寫「`menuconfig X` 表示「這是子選單入口」，沒勾它整個 `if X ... endif` block 全部失效」是把 UI 顯示跟語意機制搞混。正解：**guard 機制是 `if X` 本身**，跟 `X` 是用 `config` 還是 `menuconfig` 宣告無關。
+
+#### 修法
+
 ```diff
-+# Master switch — 沒設這個下面所有 CT_GDB_* 都失效
++# Master switch — 沒設這個下面所有 CT_GDB_* 都是 phantom symbol，silently ignored
 +CT_DEBUG_GDB=y
  CT_GDB_V_16=y
  CT_GDB_VERSION="16.3"
@@ -1198,7 +1485,21 @@ endif
 
 **結果**：第三次跑 9:46 完成，bin/ 含 `aarch64-centos7-linux-gnu-gdb` + `debug-root/usr/bin/gdbserver` ✓。
 
-**教訓**：kconfig `menuconfig` vs `config` 的視覺差異（前者是子選單入口）對應到不同的 enable 機制。**寫 defconfig 時對照 ct-ng `config/gen/*.in` 看每個 symbol 的 master switch hierarchy**，不要只憑「這個 symbol 看起來合理」就寫進 defconfig。
+#### 怎麼提早發現
+
+每寫一個 `CT_FOO_*=y` 之前，先 grep 看 FOO 是不是某個 `if` block 的 guard：
+
+```bash
+$ grep -rE "^(if|menuconfig|config) FOO\b" /opt/.../config/
+```
+
+如果 FOO 出現在 `if FOO` 之後，guard symbol 也要寫進 defconfig。
+
+#### 教訓
+
+- kconfig 對 unknown symbol 預設 silent ignore（`confdata.c:432-434` 建 phantom symbol）。設 `CT_X=y` 沒 error **不代表**真的有效——可能只是建了個沒人 reference 的 phantom
+- `if X ... endif` 是 hierarchical guard——guard 沒勾，整個 block 內**所有 symbol 都沒注入 kconfig 知識**
+- 寫 defconfig 對照 `config/gen/*.in` 看每個 symbol 的 enable hierarchy，**從 root 往葉子一層層 enable**，不要直接從葉子設值
 
 ### 2.5 Phase 2 sysroot 多出來的 .a 是 gdbserver 帶的，不是 glibc 2.17 vs 2.12 差異
 
@@ -1765,8 +2066,7 @@ osxcross/bin/arm64-apple-darwin20.4-clang   ✓
 完整可用，只是壓縮率高得反直覺。
 
 **Reference**：
-- macOS / Darwin 對應表：<https://en.wikipedia.org/wiki/Darwin_(operating_system)#Release_history>
-
+- [macOS / Darwin 對應表](https://en.wikipedia.org/wiki/Darwin_(operating_system)#Release_history)
 ---
 
 ## 紀錄樣板（real errors 從這裡開始）
@@ -2054,8 +2354,8 @@ User 提醒：「你的那個之前的 md 有沒有好好看」+「我記得之�
 - 這修法跟 host OS 無關 — Linux container 也撞，因為 zlib URL 是上游問題不是 host 問題
 
 **Reference**：
-- CVE-2022-37434：<https://nvd.nist.gov/vuln/detail/CVE-2022-37434>
-- zlib fossils archive：<https://www.zlib.net/fossils/>
+- [CVE-2022-37434](https://nvd.nist.gov/vuln/detail/CVE-2022-37434)
+- [zlib fossils archive](https://www.zlib.net/fossils/)
 - 既存 macOS 修法在 `toolchain/scripts/bootstrap-ctng.sh:91-98`
 - 詳細解釋：`toolchain/crosstool_ng_explained.md` Mechanism 7 Fix #3 (line 835-872)
 
@@ -2194,8 +2494,8 @@ CT_DoExecLog ALL make ${CT_JOBSFLAGS} all-libcpp ${gcc_core_build_libcpp} all-bu
 - 我們是 cross-build（BUILD = HOST = aarch64 容器、TARGET = x86_64），ct-ng 仍把 BUILD 跟 HOST 分開 dir 建：`build-aarch64-build_unknown-linux-gnu/` vs `host-x86_64-...../` — 所以還是需要 build-side libcpp
 
 **Reference**：
-- ct-ng issue #1564：<https://github.com/crosstool-ng/crosstool-ng/issues/1564>
-- GCC patch：<https://gcc.gnu.org/pipermail/gcc-patches/2021-July/575205.html>
+- [ct-ng issue #1564](https://github.com/crosstool-ng/crosstool-ng/issues/1564)
+- [GCC patch](https://gcc.gnu.org/pipermail/gcc-patches/2021-July/575205.html)
 - ct-ng 1.28 修法 in `scripts/build/cc/gcc.sh` line 670-700
 
 **這也是 ct-ng 1.25 + GCC 11+ 的歷史 bug，不是我們 backport 製造的**。但因為 ct-ng 1.25 ships 時 GCC 還只到 11.2.0，剛好 11.2.0 的 `build/genmatch` 還沒這個依賴，所以 1.25 + GCC 11.2 沒撞。GCC 12 之後就會撞。
@@ -2259,8 +2559,7 @@ sed -i \
 **Reference**：
 - ct-ng 1.28 `config/libc/glibc.in` line `GLIBC_MAKEINFO_WORKAROUND def_bool y depends on GLIBC_2_23_or_older`
 - ct-ng 1.28 `scripts/build/libc/glibc.sh` 對應 sed 邏輯
-- Texinfo 6.8 release notes 棄用 macro：<https://www.gnu.org/software/texinfo/manual/texinfo/html_node/index.html>
-
+- [Texinfo 6.8 release notes 棄用 macro](https://www.gnu.org/software/texinfo/manual/texinfo/html_node/index.html)
 **結果**：✅ MAKEINFO + all-build-libcpp + GCC_V_15 selects 三個修法到位，build 跑了 6 分 28 秒（vs 前次 3 分 39 秒）。過了 stage-1 GCC + kernel headers，**真的進到 glibc 2.12 multilib build**，撞 Error #8。
 
 ---
@@ -2325,8 +2624,7 @@ movq %eax, %fs:0x28
 **Reference**：
 - 我手動讀 `nptl/sysdeps/x86_64/tls.h` 從 sourceware glibc git mirror (`?p=glibc.git;a=blob_plain;f=nptl/sysdeps/x86_64/tls.h;hb=glibc-2.12.1`)
 - ct-ng issue #1825 (2022-09)
-- GCC inline asm `%q` modifier docs：<https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html>
-
+- [GCC inline asm `%q` modifier docs](https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html)
 **修法**：寫 source patch 把那兩個 `movq %q0,...` asm 的 `IMM_MODE` 改成 `"r"`（強制 register、不准 immediate）。GCC 必然選 64-bit register（因為 value 是 unsigned long int = 64-bit），組譯就過了。
 
 只動 movq 兩處，`movl` 用 IMM_MODE 不變（32-bit register / immediate 都合法）。最小侵入。
@@ -2478,8 +2776,8 @@ naming to docker.io/capsule8/cross-toolbox:phase1 done
 
 **Reference**：
 - glibc 2.12 `csu/Makefile`：sourceware glibc git mirror, `?p=glibc.git;a=blob_plain;f=csu/Makefile;hb=glibc-2.12.1`
-- gas CFI directives docs：<https://sourceware.org/binutils/docs/as/CFI-directives.html>
-- ImperialViolet 寫 CFI in assembly：<https://www.imperialviolet.org/2017/01/18/cfi.html>
+- [gas CFI directives docs](https://sourceware.org/binutils/docs/as/CFI-directives.html)
+- [ImperialViolet 寫 CFI in assembly](https://www.imperialviolet.org/2017/01/18/cfi.html)
 - glibc upstream ≥ 2.16 把 csu/initfini.c 整套廢掉、改用獨立 crti.S / crtn.S source files（太大改動，不適合 backport）
 
 **為什麼 x86_64 pass 沒撞**：x86_64 的 `csu/start.S` 是手寫純 asm，不走 initfini.c → sed 這條路。i386 才用 initfini.c 抽 marker 老把戲。
@@ -2537,7 +2835,7 @@ strstr (phaystack, pneedle)
 glibc 2.12 (2010 寫的) 大量用 K&R style — 那年 GCC 4.x 預設 gnu89，當年標準。
 
 **Reference**：
-- GCC 15 release notes 說 `-std` default 改 gnu23：<https://gcc.gnu.org/gcc-15/changes.html>
+- [GCC 15 release notes 說 `-std` default 改 gnu23](https://gcc.gnu.org/gcc-15/changes.html)
 - C23 標準 (ISO/IEC 9899:2023) §6.7.6 函式宣告語法移除 K&R form
 - glibc 2.12 `string/strstr.c` (sourceware mirror)
 
@@ -2586,7 +2884,7 @@ libgcc/generic-morestack.c:71:24: error: '__NR_mmap2' undeclared (first use in t
 **假設**（**沒完全驗證**，build 清空 sysroot 看不到實際 syscall.h）：glibc 2.12 generate `bits/syscall.h` 對 x86_64 + i386 multilib 沒正確分流 `__WORDSIZE`，SYS_mmap2 在 x86_64 也被 define、但展開後 `__NR_mmap2` 不存在。
 
 **Reference**：
-- ct-ng issue #1825：<https://github.com/crosstool-ng/crosstool-ng/issues/1825>
+- [ct-ng issue #1825](https://github.com/crosstool-ng/crosstool-ng/issues/1825)
 - glibc 2.12 `sysdeps/unix/sysv/linux/Makefile`（`bits/syscall.h` 生成邏輯，sourceware mirror）
 
 **嘗試**：寫 patch `0001-libgcc-generic-morestack-guard-NR-mmap2.patch`，把：
@@ -2693,8 +2991,8 @@ libitm/barrier.cc:34:12: error: cast from 'void*' to 'uintptr_t'
 - 對 cgo Go 部署影響：0
 
 **Reference**：
-- C++26 - Wikipedia (no TM)：<https://en.wikipedia.org/wiki/C%2B%2B26>
-- cppreference TM TS (status)：<https://en.cppreference.com/w/cpp/language/transactional_memory>
+- [C++26 - Wikipedia (no TM)](https://en.wikipedia.org/wiki/C%2B%2B26)
+- [cppreference TM TS (status)](https://en.cppreference.com/w/cpp/language/transactional_memory)
 - GCC 15.2 `configure.ac` line 564-566（`--disable-libitm` 自動接受）
 - LFS / OE-core / Buildroot 都用 `--disable-libitm`
 
@@ -2784,8 +3082,7 @@ configure: error: no usable python found at python3
 - 維持 `--disable-libsanitizer`，理由是設計目標選擇，不是技術不可能
 
 **Reference**：
-- AmanoTeam/obggcc README (sanitizer + RPATH 機制)：<https://github.com/AmanoTeam/obggcc>
-
+- [AmanoTeam/obggcc README (sanitizer + RPATH 機制)](https://github.com/AmanoTeam/obggcc)
 ---
 
 ### Finding：ct-ng patch install 機制 latent bug

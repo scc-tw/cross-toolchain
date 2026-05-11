@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>ct-ng 18-step Pipeline Explorer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0b1220;
+    --panel: #131c2f;
+    --panel-2: #1a2440;
+    --border: #29365a;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --dim: #64748b;
+    --accent: #38bdf8;
+    --c-noop: #475569;
+    --c-host: #3b82f6;
+    --c-text: #a855f7;
+    --c-bootstrap: #10b981;
+    --c-consumer: #f97316;
+    --c-final: #eab308;
+    --c-cleanup: #64748b;
+  }
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+    height: 100%;
+    overflow: hidden;
+  }
+  body { display: flex; flex-direction: column; }
+  header {
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  header .insight {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  header .insight code {
+    color: var(--accent);
+    background: rgba(56,189,248,0.08);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .callout {
+    margin-top: 8px;
+    padding: 7px 12px;
+    border-left: 3px solid var(--c-bootstrap);
+    background: rgba(16,185,129,0.07);
+    font-size: 12px;
+    color: var(--muted);
+    border-radius: 0 4px 4px 0;
+  }
+  .callout strong { color: var(--text); }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 260px 1fr 320px;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  aside.left, aside.right {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 14px;
+  }
+  aside.right {
+    border-right: none;
+    border-left: 1px solid var(--border);
+  }
+
+  .section-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--dim);
+    margin: 4px 0 8px;
+    font-weight: 600;
+  }
+  .section-title:not(:first-child) { margin-top: 18px; }
+
+  .filter-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    border-radius: 5px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 120ms;
+  }
+  .filter-row:hover { background: var(--panel-2); }
+  .filter-row input { margin-top: 3px; cursor: pointer; }
+  .filter-row span { font-size: 12.5px; }
+  .filter-row .desc { font-size: 11px; color: var(--muted); display: block; margin-top: 2px; }
+
+  .preset-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .preset-btn {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    border-radius: 5px;
+    font-size: 11.5px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 120ms;
+  }
+  .preset-btn:hover {
+    background: var(--border);
+    border-color: var(--accent);
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 11.5px;
+  }
+  .legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .canvas-wrap {
+    position: relative;
+    overflow: auto;
+    background:
+      radial-gradient(circle at 20% 30%, rgba(56,189,248,0.04) 0%, transparent 50%),
+      radial-gradient(circle at 80% 70%, rgba(168,85,247,0.04) 0%, transparent 50%),
+      var(--bg);
+  }
+  svg.pipeline {
+    display: block;
+    margin: 20px auto;
+  }
+
+  .node {
+    cursor: pointer;
+    transition: transform 150ms ease, filter 150ms ease;
+    transform-origin: center;
+              transform-box: fill-box;
+  }
+  .node:hover {
+    filter: brightness(1.18);
+  }
+  .node.selected rect.node-bg {
+    stroke: var(--accent);
+    stroke-width: 2.5;
+  }
+  .node.hidden { display: none; }
+
+  .node rect.node-bg {
+    transition: stroke 150ms;
+    stroke: var(--border);
+    stroke-width: 1.2;
+  }
+  .node text {
+    fill: white;
+    font-family: 'SF Mono', Monaco, monospace;
+    pointer-events: none;
+    user-select: none;
+  }
+  .node text.step-num {
+    font-size: 11px;
+    font-weight: 700;
+    fill: rgba(255,255,255,0.7);
+  }
+  .node text.step-name {
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .node text.step-purpose {
+    font-size: 9.5px;
+    fill: rgba(255,255,255,0.85);
+  }
+  .node text.badge {
+    font-size: 12px;
+  }
+  .edge {
+    fill: none;
+    stroke: #64748b;
+    stroke-width: 1.4;
+    opacity: 0.55;
+    transition: opacity 150ms, stroke 150ms, stroke-width 150ms;
+  }
+  .edge.elf {
+    stroke: var(--c-consumer);
+    stroke-dasharray: 4 3;
+    opacity: 0.75;
+    stroke-width: 1.8;
+  }
+  .edge.highlight {
+    stroke: var(--accent);
+    stroke-width: 2.2;
+    opacity: 1;
+  }
+  .edge.dimmed { opacity: 0.15; }
+
+  .detail-empty {
+    text-align: center;
+    padding: 40px 12px;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .detail-empty .big {
+    font-size: 28px;
+    margin-bottom: 6px;
+    opacity: 0.4;
+  }
+  .detail-card {
+    background: var(--panel-2);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+  }
+  .detail-card .step-badge {
+    display: inline-block;
+    font-family: 'SF Mono', monospace;
+    font-size: 10.5px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    margin-right: 6px;
+    color: white;
+    font-weight: 600;
+  }
+  .detail-card h3 {
+    font-size: 13.5px;
+    margin: 6px 0 4px;
+    font-family: 'SF Mono', monospace;
+    word-break: break-all;
+  }
+  .detail-card .category {
+    font-size: 10.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .detail-section {
+    margin-top: 12px;
+  }
+  .detail-section .label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--dim);
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+  .detail-section .value {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text);
+    background: var(--bg);
+    padding: 6px 9px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    font-family: 'SF Mono', monospace;
+    font-size: 11px;
+  }
+  .detail-section .value.elf-mark {
+    border-left: 3px solid var(--c-consumer);
+  }
+  .detail-section .value.bootstrap-mark {
+    border-left: 3px solid var(--c-bootstrap);
+  }
+  .detail-section .value.bridge-mark {
+    border-left: 3px solid var(--c-final);
+    background: rgba(234,179,8,0.06);
+  }
+
+  .artifact-table {
+    width: 100%;
+    font-size: 10.5px;
+    border-collapse: collapse;
+    margin-top: 2px;
+  }
+  .artifact-table tr {
+    border-top: 1px solid var(--border);
+  }
+  .artifact-table tr:first-child { border-top: none; }
+  .artifact-table td {
+    padding: 5px 4px;
+    vertical-align: top;
+    line-height: 1.4;
+  }
+  .artifact-table .a-name {
+    font-family: 'SF Mono', monospace;
+    word-break: break-word;
+  }
+  .artifact-table .a-meta {
+    font-size: 9.5px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .artifact-table .a-en {
+    width: 22px;
+    text-align: center;
+    font-weight: 700;
+  }
+  .a-en.y { color: var(--c-bootstrap); }
+  .a-en.n { color: var(--dim); }
+  .a-en.p { color: var(--c-final); }
+  .artifact-table tr.disabled { opacity: 0.45; }
+  .artifact-summary {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    padding: 4px 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    border-left: 2px solid var(--accent);
+  }
+  .dep-list {
+    list-style: none;
+    padding: 0;
+  }
+  .dep-list li {
+    padding: 5px 8px;
+    margin-bottom: 4px;
+    background: var(--bg);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    font-size: 11px;
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+  }
+  .dep-list .dep-num {
+    font-family: 'SF Mono', monospace;
+    font-weight: 700;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .dep-list .dep-elf { color: var(--c-consumer); }
+
+  .pin-toggle {
+    display: inline-block;
+    padding: 4px 8px;
+    margin-top: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--muted);
+  }
+  .pin-toggle:hover { background: var(--panel-2); color: var(--text); }
+  .pin-toggle.active {
+    background: rgba(56,189,248,0.15);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .pinned-list {
+    margin-top: 4px;
+  }
+  .pinned-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 7px;
+    background: var(--panel-2);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-family: 'SF Mono', monospace;
+  }
+  .pinned-item .x {
+    margin-left: auto;
+    cursor: pointer;
+    color: var(--dim);
+    padding: 0 4px;
+  }
+  .pinned-item .x:hover { color: var(--c-consumer); }
+
+  footer {
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    padding: 12px 22px;
+    flex-shrink: 0;
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+  .prompt-out {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 10px 12px;
+    min-height: 64px;
+    max-height: 120px;
+    overflow-y: auto;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 11.5px;
+    color: var(--text);
+    white-space: pre-wrap;
+    line-height: 1.55;
+  }
+  .copy-btn {
+    background: var(--accent);
+    color: #0b1220;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: 600;
+    font-family: inherit;
+    font-size: 12.5px;
+    transition: all 120ms;
+    align-self: stretch;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { background: #67d4fc; }
+  .copy-btn.copied { background: var(--c-bootstrap); color: white; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>crosstool-ng 1.25 — 18-step Pipeline Explorer（Mac → Linux x86_64 / glibc 2.12）</h1>
+  <div class="insight">
+    <code>source (text)</code> → <code>Mach-O 工具 (step 1–9)</code> → <code>ELF bootstrap @ step 10</code> → <code>ELF in → ELF/Mach-O out (step 12+)</code>
+  </div>
+  <div class="callout">
+    <strong>核心 insight：</strong>ct-ng framework 設了 18 個 hook，但對「glibc + cross toolchain type」這個組合，只有 <strong>13 個會實際跑</strong>。標 ✗ 的 5 個（7, 11, 13, 16, 17）framework 留著但 no-op 或 skip。
+  </div>
+  <div class="callout" style="border-left-color:#eab308; background:rgba(234,179,8,0.07); margin-top:6px">
+    <strong>◆ 跨格式 bridge：</strong>step 3, 6, 9, 12 的 binary 自己是 <strong>Mac Mach-O</strong>（跑在 Mac 上）但操作 <strong>x86_64 ELF</strong>。這是 cross-toolchain 的核心 trick——<code>--host</code> 控制 binary 自己格式，<code>--target</code> 控制 binary 操作的格式，兩條軸正交。Step 15 反過來：binary 自己是 ELF（跑在 target Linux 上）也操作 ELF。
+  </div>
+</header>
+
+<main>
+  <aside class="left">
+    <div class="section-title">Filters</div>
+    <label class="filter-row">
+      <input type="checkbox" id="f-hide-noop">
+      <span>只看實際會跑的 step<span class="desc">隱藏 5 個 no-op / skip（✗）</span></span>
+    </label>
+    <label class="filter-row">
+      <input type="checkbox" id="f-only-elf">
+      <span>只看吃 ELF 當 input 的 step<span class="desc">只剩 step 12, 14, 15</span></span>
+    </label>
+    <label class="filter-row">
+      <input type="checkbox" id="f-show-tools" checked>
+      <span>顯示每 step 用什麼工具<span class="desc">編譯器 / 組譯器 / 連結器</span></span>
+    </label>
+    <label class="filter-row">
+      <input type="checkbox" id="f-highlight-elf-edges">
+      <span>把 ELF link-time 依賴邊加粗<span class="desc">step 10 → 12/14/15 那些虛線</span></span>
+    </label>
+
+    <div class="section-title">Presets</div>
+    <div class="preset-grid">
+      <button class="preset-btn" data-preset="full">全部 18 step</button>
+      <button class="preset-btn" data-preset="actual">實際 13 step</button>
+      <button class="preset-btn" data-preset="elf-only">只看 ELF 鏈</button>
+      <button class="preset-btn" data-preset="bootstrap">Bootstrap 焦點</button>
+      <button class="preset-btn" data-preset="bridge" style="grid-column:span 2; background:rgba(234,179,8,0.12); border-color:#eab308; color:#fde68a">◆ 跨格式 bridge（3/6/9/12/15）</button>
+    </div>
+
+    <div class="section-title">Legend</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#3b82f6"></div>Source → Mach-O 工具</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#a855f7"></div>Text 處理（純文字 copy）</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#10b981"></div>★ ELF bootstrap point</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#f97316"></div>⭐ 吃 ELF 當 input</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#eab308"></div>★ FINAL（user 用 gcc）</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#475569"></div>✗ Framework no-op / skip</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#64748b"></div>Cleanup</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#eab308; transform:rotate(45deg); width:9px; height:9px"></div>◆ 跨格式 bridge（binary 格式 ≠ 操作格式）</div>
+
+    <div class="section-title">已 pin (<span id="pin-count">0</span>)</div>
+    <div class="pinned-list" id="pinned-list">
+      <div style="color:var(--dim); font-size:11px; padding:6px 0;">點 node 後 pin 起來收進 prompt</div>
+    </div>
+  </aside>
+
+  <div class="canvas-wrap">
+    <svg class="pipeline" id="pipeline" width="1140" height="520" viewBox="0 0 1140 520">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#64748b"/>
+        </marker>
+        <marker id="arr-elf" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#f97316"/>
+        </marker>
+        <marker id="arr-hl" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#38bdf8"/>
+        </marker>
+      </defs>
+      <g id="edges"></g>
+      <g id="nodes"></g>
+    </svg>
+  </div>
+
+  <aside class="right">
+    <div id="detail-content">
+      <div class="detail-empty">
+        <div class="big">↖︎</div>
+        點任何 step node 看細節：<br>
+        目的、用什麼工具、輸入 / 輸出、為什麼依賴哪幾個前面的 step。
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <div class="prompt-out" id="prompt">點 node 探索 pipeline，pin 起來感興趣的 step，這裡會生成可以丟回 Claude 的問題 prompt。</div>
+  <button class="copy-btn" id="copy">Copy Prompt</button>
+</footer>
+
+<script>
+// ──────────────────────────────────────────────────────────
+// Step data — derived from docs/crosstool-ng-explained.md §Mechanism 1
+// ──────────────────────────────────────────────────────────
+const CAT = {
+  HOST:      { color: '#3b82f6', label: 'Source → Mach-O 工具', badge: '' },
+  TEXT:      { color: '#a855f7', label: 'Text 處理', badge: '' },
+  BOOTSTRAP: { color: '#10b981', label: '★ ELF bootstrap', badge: '★' },
+  CONSUMER:  { color: '#f97316', label: '⭐ 吃 ELF', badge: '⭐' },
+  FINAL:     { color: '#eab308', label: '★ FINAL gcc', badge: '★★' },
+  NOOP:      { color: '#475569', label: '✗ no-op / skip', badge: '✗' },
+  CLEANUP:   { color: '#64748b', label: 'Cleanup', badge: '' },
+};
+
+const steps = [
+  // Row 1 — host-side tools 1-6
+  { n:1, name:'companion_tools_for_build', cat:'HOST',
+    purpose:'m4/automake 等小工具',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'m4/autoconf/automake/libtool/gettext 等 source tarball（text）',
+    binaryFormat:'Mac Mach-O', operatesOn:'—（通用 text 工具）',
+    deps:[], runs:true },
+  { n:2, name:'companion_libs_for_build', cat:'HOST',
+    purpose:'ncurses (給 step 5 用 tic)',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'ncurses source（text）',
+    binaryFormat:'Mac Mach-O .a', operatesOn:'—（library，不是工具）',
+    deps:[1], runs:true },
+  { n:3, name:'binutils_for_build', cat:'HOST',
+    purpose:'cross-as / cross-ld（ct-ng 中間用）',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'binutils source（text）',
+    binaryFormat:'Mac Mach-O', operatesOn:'x86_64 ELF（cross-as 吃 .S 吐 ELF .o；cross-ld link ELF）',
+    isBridge:true,
+    deps:[1], runs:true,
+    note:'binary 自己是 Mac Mach-O（跑在 Mac 上），但 `--target=x86_64-linux-gnu` 讓它操作 ELF。' },
+  { n:4, name:'companion_tools_for_host', cat:'HOST',
+    purpose:'同 step 1 但裝 PREFIX_DIR',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'同 step 1 source（text）',
+    binaryFormat:'Mac Mach-O', operatesOn:'—（通用）',
+    deps:[1], runs:true },
+  { n:5, name:'companion_libs_for_host', cat:'HOST',
+    purpose:'gmp/mpfr/mpc/isl/ncurses/zlib/libiconv/gettext',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'gmp/mpfr/mpc/isl/ncurses/... source（text）',
+    binaryFormat:'Mac Mach-O .a', operatesOn:'—（library）',
+    deps:[1,2], runs:true },
+  { n:6, name:'binutils_for_host', cat:'HOST',
+    purpose:'最終 cross-binutils（user 用）',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'binutils source（text）',
+    binaryFormat:'Mac Mach-O', operatesOn:'x86_64 ELF（user 呼的 x86_64-...-as / -ld，吃 / 吐 ELF）',
+    isBridge:true,
+    deps:[1], runs:true,
+    note:'跟 step 3 一樣的雙身份，差別在裝 PREFIX_DIR、是 user shell 最後會看到的版本。' },
+  // Row 2 — bootstrap dance 7-12
+  { n:7, name:'libc_headers', cat:'NOOP',
+    purpose:'glibc backend: no-op',
+    tools:null,
+    inputs:'—（glibc.sh 沒 override headers()，落到 libc.sh:9–11 預設 `: ;`）',
+    binaryFormat:'—', operatesOn:'—',
+    deps:[], runs:false,
+    note:'glibc 整個在 step 10 一輪建完。只有 uClibc-ng/musl/newlib 才實作 headers()。' },
+  { n:8, name:'kernel_headers', cat:'TEXT',
+    purpose:'sysroot/usr/include/linux/*',
+    tools:{ cc:'(純 file copy)', as:'-', ld:'-' },
+    inputs:'Linux kernel tarball → `make headers_install`（text → text）',
+    binaryFormat:'文字 .h（給後面 glibc + cross-gcc 找 syscall 號）', operatesOn:'—（不是 binary）',
+    deps:[], runs:true },
+  { n:9, name:'cc_core', cat:'HOST',
+    purpose:'殘缺 cross-gcc (stage-1)，下一步編 glibc 用',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'GCC source（text）；不吃 libc（`--without-headers --with-newlib --disable-shared --disable-libstdc++-v3`）',
+    binaryFormat:'Mac Mach-O 殘缺 cross-gcc', operatesOn:'x86_64 ELF（吃 .c text → cpp/cc1 → call cross-as → 吐 ELF .o）',
+    isBridge:true,
+    deps:[6], runs:true,
+    note:'cross-gcc binary 是 Mach-O 跑在 Mac 上，但 emit 的 code 是 x86_64-linux ELF。`--host` vs `--target` 兩條軸的典型示範。' },
+  { n:10, name:'libc_main', cat:'BOOTSTRAP',
+    purpose:'sysroot/lib/libc.so.6 + crt*.o + headers 一輪全裝',
+    tools:{ cc:'step 9 stage-1 gcc (Mach-O)', as:'step 3 cross-as (Mach-O)', ld:'step 3 cross-ld (Mach-O)' },
+    inputs:'glibc source（text）+ step 9 cc_core (Mach-O 工具) + step 8 kernel headers（text）',
+    binaryFormat:'★ pipeline 第一個 ELF 出爐：Linux ELF .so / .a / crt*.o + text headers', operatesOn:'—（library + crt artifacts，不是工具）',
+    deps:[9,8,3], runs:true,
+    note:'glibc 一輪到位。是 source-only + Mach-O 工具 → 直出 ELF 的 bootstrap point。自己不吃 ELF，但是 pipeline 第一個生 ELF artifacts 的 step。' },
+  { n:11, name:'cc_for_build', cat:'NOOP',
+    purpose:'cross toolchain type: skip',
+    tools:null,
+    inputs:'—（`gcc.sh:744–746` `case ... cross) return 0;;`）',
+    binaryFormat:'—', operatesOn:'—',
+    deps:[], runs:false,
+    note:'三階段 GCC（cc_core → cc_for_build → cc_for_host）只在 canadian/cross-native 才跑滿。Mac→Linux 是 cross type → 整個 skip。' },
+  { n:12, name:'cc_for_host', cat:'FINAL',
+    purpose:'★★ user 用的 cross-gcc + g++ + libstdc++',
+    tools:{ cc:'brew gcc-14', as:'Apple as', ld:'Apple ld' },
+    inputs:'GCC source（text）+ ⭐ step 10 libc.so/.a/crt（ELF）— 第一次吃 ELF 當 input（libstdc++ link against ELF libc）',
+    binaryFormat:'Mac Mach-O gcc/g++ + 隨包 Linux ELF libstdc++.so/.a', operatesOn:'x86_64 ELF（gcc emit code；libstdc++ artifact 自己是 ELF）',
+    isBridge:true,
+    deps:[10,6,5], runs:true, elfIn:true,
+    note:'最完整的雙身份 step：gcc 主程式是 Mac Mach-O，隨包出貨的 libstdc++ 是 Linux ELF。user 在 Mac 跑這支 gcc，gcc 替他在本機編出 Linux ELF binary。' },
+  // Row 3 — post-cc + target + cleanup 13-18
+  { n:13, name:'libc_post_cc', cat:'NOOP',
+    purpose:'glibc backend: no-op',
+    tools:null,
+    inputs:'—（同 step 7 理由）',
+    binaryFormat:'—', operatesOn:'—',
+    deps:[], runs:false,
+    note:'uClibc-ng 跟 musl 才實作 post_cc（最後補裝 libc 後半部）。glibc 不需要。' },
+  { n:14, name:'companion_libs_for_target', cat:'CONSUMER',
+    purpose:'sysroot/usr/lib/libgmp.so 等',
+    tools:{ cc:'step 12 cross-gcc (Mach-O)', as:'step 6 cross-as (Mach-O)', ld:'step 6 cross-ld (Mach-O)' },
+    inputs:'gmp/mpfr/mpc source（text）+ ⭐ step 10 libc（ELF）',
+    binaryFormat:'Linux ELF .so', operatesOn:'—（library，給 target user binary link 用）',
+    deps:[12,10,6], runs:true, elfIn:true },
+  { n:15, name:'binutils_for_target', cat:'CONSUMER',
+    purpose:'sysroot/usr/bin/as 等',
+    tools:{ cc:'step 12 cross-gcc (Mach-O)', as:'step 6 cross-as (Mach-O)', ld:'step 6 cross-ld (Mach-O)' },
+    inputs:'binutils source（text）+ ⭐ step 10 libc（ELF）',
+    binaryFormat:'Linux ELF binary（這次 binary 自己就是 ELF，跑在 target 上）', operatesOn:'x86_64 ELF（target-native binutils）',
+    isBridge:true,
+    deps:[12,10,6], runs:true, elfIn:true,
+    note:'唯一一個 binary 自己就是 ELF 的 step。3/6/9/12 是「Mach-O 殼 + 操作 ELF」；15 反過來是「ELF 殼 + 操作 ELF」（兩軸同邊）。' },
+  { n:16, name:'debug', cat:'NOOP',
+    purpose:'gdb cross-debugger（CT_DEBUG_GDB=n 跳過）',
+    tools:null,
+    inputs:'—',
+    binaryFormat:'—', operatesOn:'—',
+    deps:[], runs:false },
+  { n:17, name:'test_suite', cat:'NOOP',
+    purpose:'optional test（預設跳過）',
+    tools:null,
+    inputs:'—',
+    binaryFormat:'—', operatesOn:'—',
+    deps:[], runs:false },
+  { n:18, name:'finish', cat:'CLEANUP',
+    purpose:'版本 stamp / manifest / 收尾',
+    tools:{ cc:'(純 cleanup)', as:'-', ld:'-' },
+    inputs:'(no compile)',
+    binaryFormat:'text manifest（toolchain version、build flags）', operatesOn:'—',
+    deps:[], runs:true },
+];
+
+// Per-step artifact manifest — derived from ct-ng 1.25 build scripts
+// vs x86_64-centos6-glibc212-gcc15.defconfig
+const E = { Y:'y', N:'n', P:'p' };  // y=enabled, n=disabled, p=partial
+const artifactsByStep = {
+  1: [
+    { name:'m4',         flag:'CT_COMP_TOOLS_M4',       en:E.N, fmt:'Mach-O', arch:'BUILD' },
+    { name:'autoconf',   flag:'CT_COMP_TOOLS_AUTOCONF', en:E.N, fmt:'Mach-O', arch:'BUILD' },
+    { name:'automake',   flag:'CT_COMP_TOOLS_AUTOMAKE', en:E.N, fmt:'Mach-O', arch:'BUILD' },
+    { name:'libtool',    flag:'CT_COMP_TOOLS_LIBTOOL',  en:E.N, fmt:'Mach-O', arch:'BUILD' },
+    { name:'make',       flag:'CT_COMP_TOOLS_MAKE',     en:E.N, fmt:'Mach-O', arch:'BUILD' },
+    { name:'dtc',        flag:'CT_COMP_TOOLS_DTC',      en:E.N, fmt:'Mach-O', arch:'BUILD' },
+    { name:'bison',      flag:'CT_COMP_TOOLS_BISON',    en:E.N, fmt:'Mach-O', arch:'BUILD' },
+  ],
+  2: [
+    { name:'tic + libncurses.a (BUILD)',  flag:'CT_NCURSES (GDB-TUI auto-select)', en:E.P, fmt:'Mach-O + .a', arch:'BUILD' },
+    { name:'gmp/mpfr/mpc/isl/cloog/libelf/zlib/iconv/gettext (BUILD)', flag:'each + cross-skip', en:E.N, fmt:'—', arch:'—' },
+  ],
+  3: [{ name:'(cross type skip — `binutils.sh:25-27` `return 0`)', flag:'—', en:E.N, fmt:'—', arch:'—' }],
+  4: [{ name:'(cross type skip — `companion_tools.sh:41-46` `return`)', flag:'—', en:E.N, fmt:'—', arch:'—' }],
+  5: [
+    { name:'libgmp.a + gmp.h',     flag:'CT_GMP=y (6.2.1)',     en:E.Y, fmt:'Mach-O .a', arch:'HOST arm64' },
+    { name:'libmpfr.a + mpfr.h',   flag:'CT_MPFR=y (4.1.0)',    en:E.Y, fmt:'Mach-O .a', arch:'HOST' },
+    { name:'libmpc.a + mpc.h',     flag:'CT_MPC=y (1.2.1)',     en:E.Y, fmt:'Mach-O .a', arch:'HOST' },
+    { name:'libisl.a + isl/*.h',   flag:'CT_ISL=y (0.24)',      en:E.Y, fmt:'Mach-O .a', arch:'HOST' },
+    { name:'libcloog.a',           flag:'CT_CLOOG (棄用)',      en:E.N, fmt:'—', arch:'—' },
+    { name:'libelf.a',             flag:'CT_LIBELF',            en:E.N, fmt:'—', arch:'—' },
+    { name:'libzlib.a',            flag:'CT_ZLIB → 你用 system', en:E.P, fmt:'system', arch:'—' },
+    { name:'libiconv.a libgettext.a', flag:'CT_LIBICONV / CT_GETTEXT', en:E.N, fmt:'—', arch:'—' },
+    { name:'libncurses.a + curses headers', flag:'CT_NCURSES (GDB-TUI)', en:E.P, fmt:'Mach-O .a', arch:'HOST' },
+    { name:'libexpat.a',           flag:'CT_EXPAT',             en:E.N, fmt:'—', arch:'—' },
+  ],
+  6: [
+    { name:'bin/x86_64-...-as / ld / ld.bfd / ar / ranlib', flag:'binutils 預設', en:E.Y, fmt:'Mach-O ◆', arch:'HOST → 操作 x86_64 ELF' },
+    { name:'bin/x86_64-...-nm / objdump / readelf / objcopy / strip / size / strings', flag:'同上', en:E.Y, fmt:'Mach-O ◆', arch:'HOST → 操作 x86_64 ELF' },
+    { name:'bin/x86_64-...-addr2line / c++filt / elfedit / gprof', flag:'同上', en:E.Y, fmt:'Mach-O', arch:'HOST' },
+    { name:'bin/x86_64-...-ld.gold', flag:'CT_BINUTILS_LINKER_GOLD', en:E.N, fmt:'—', arch:'你只 ld.bfd' },
+    { name:'lib/libbfd.a libopcodes.a libctf.a libsframe.a libiberty.a', flag:'binutils internal', en:E.Y, fmt:'Mach-O .a', arch:'HOST' },
+    { name:'lib/bfd-plugins/libdep.dylib', flag:'CT_BINUTILS_PLUGINS=y', en:E.Y, fmt:'Mach-O dylib', arch:'HOST' },
+    { name:'${TARGET}/lib/ldscripts/elf_x86_64.x* elf_i386.x*', flag:'multilib', en:E.Y, fmt:'text', arch:'—' },
+    { name:'${TARGET}/bin/{as,ld,ar,...} symlinks', flag:'no-prefix alias', en:E.Y, fmt:'symlink', arch:'—' },
+    { name:'include/{bfd.h, dis-asm.h, ...}', flag:'binutils headers', en:E.Y, fmt:'text', arch:'—' },
+  ],
+  7: [{ name:'(glibc backend: no-op — `libc.sh:9-11` default `: ;`)', flag:'—', en:E.N, fmt:'—', arch:'—' }],
+  8: [
+    { name:'usr/include/linux/*.h (~250 個 UAPI header)', flag:'CT_KERNEL_LINUX=y', en:E.Y, fmt:'text', arch:'—' },
+    { name:'usr/include/asm/*.h (x86_64 syscall 號 + types)', flag:'同上', en:E.Y, fmt:'text', arch:'x86_64 ABI' },
+    { name:'usr/include/asm-generic/*.h', flag:'同上', en:E.Y, fmt:'text', arch:'—' },
+    { name:'usr/include/{mtd, rdma, scsi, video, sound, xen, drm}/', flag:'同上', en:E.Y, fmt:'text', arch:'—' },
+  ],
+  9: [
+    { name:'bin/${TARGET}-gcc + cpp + gcc-${VER}', flag:'stage-1 cross-gcc', en:E.Y, fmt:'Mach-O ◆', arch:'HOST → emit x86_64 ELF' },
+    { name:'libexec/.../{cc1, collect2, lto-wrapper, lto1, liblto_plugin}', flag:'gcc internals', en:E.Y, fmt:'Mach-O', arch:'HOST' },
+    { name:'lib/gcc/.../libgcc.a + libgcc_eh.a (殘缺)', flag:'build_libgcc=yes', en:E.Y, fmt:'ELF .a', arch:'x86_64 + i686' },
+    { name:'lib/gcc/.../{crtbegin, crtbeginS, crtbeginT, crtend, crtendS}.o', flag:'gcc-side crt', en:E.Y, fmt:'ELF .o', arch:'x86_64 + i686' },
+    { name:'lib/gcc/.../include/ (stddef.h stdarg.h stdint.h stdbool.h limits.h tgmath.h ...)', flag:'gcc builtin headers', en:E.Y, fmt:'text', arch:'—' },
+    { name:'cc1plus / libstdc++', flag:'lang_list=c only', en:E.N, fmt:'—', arch:'殘缺不建 C++' },
+  ],
+  10: [
+    { name:'lib(64)/libc-2.12.so + libc.so.6 + libc.a + libc_nonshared.a', flag:'glibc 主庫', en:E.Y, fmt:'ELF .so + .a', arch:'x86_64 + i686 (multilib x2)' },
+    { name:'lib(64)/libm libpthread librt libdl libutil libnsl libresolv libcrypt libanl libBrokenLocale libcidn libthread_db .so + .a', flag:'NPTL + RPC', en:E.Y, fmt:'ELF .so + .a', arch:'x86_64 + i686' },
+    { name:'lib(64)/libmemusage libpcprofile libSegFault .so', flag:'profiling LD_PRELOAD', en:E.Y, fmt:'ELF .so', arch:'x86_64 + i686' },
+    { name:'lib64/ld-2.12.so → ld-linux-x86-64.so.2; lib/ld-2.12.so → ld-linux.so.2', flag:'dynamic linker', en:E.Y, fmt:'ELF', arch:'x86_64 + i686' },
+    { name:'lib(64)/{crt1, crti, crtn, gcrt1, Mcrt1, Scrt1}.o', flag:'glibc-side crt', en:E.Y, fmt:'ELF .o', arch:'x86_64 + i686' },
+    { name:'usr/lib(64)/libnss_{files, dns, compat, hesiod, nis, nisplus}.so.2', flag:'NSS plugins', en:E.Y, fmt:'ELF .so', arch:'x86_64 + i686' },
+    { name:'usr/include/*.h (~300 個 glibc header: stdio stdlib string time unistd sys/* bits/* ...)', flag:'glibc API', en:E.Y, fmt:'text', arch:'—' },
+    { name:'usr/share/locale/ binary locale data', flag:'CT_GLIBC_LOCALES', en:E.N, fmt:'—', arch:'—' },
+    { name:'usr/share/zoneinfo/', flag:'tzdata', en:E.Y, fmt:'binary tzdata', arch:'—' },
+  ],
+  11: [{ name:'(cross type skip — `gcc.sh:744-746` `return 0`)', flag:'—', en:E.N, fmt:'—', arch:'—' }],
+  12: [
+    { name:'bin/${TARGET}-{gcc, g++, c++, cpp, gcc-${VER}}', flag:'user-facing driver', en:E.Y, fmt:'Mach-O ◆', arch:'HOST → emit x86_64 ELF' },
+    { name:'bin/${TARGET}-{gcc-ar, gcc-nm, gcc-ranlib}', flag:'LTO wrapper', en:E.Y, fmt:'Mach-O', arch:'HOST' },
+    { name:'bin/${TARGET}-{gcov, gcov-tool, gcov-dump, lto-dump}', flag:'coverage + LTO', en:E.Y, fmt:'Mach-O', arch:'HOST' },
+    { name:'libexec/.../{cc1, cc1plus, collect2, lto-wrapper, lto1, liblto_plugin}', flag:'gcc internals', en:E.Y, fmt:'Mach-O + dylib', arch:'HOST' },
+    { name:'lib/gcc/.../{libgcc.a, libgcc_s.so.1, libgcc_eh.a, libgcov.a}', flag:'full libgcc', en:E.Y, fmt:'ELF .a + .so', arch:'x86_64 + i686' },
+    { name:'lib/gcc/.../{crtbegin, crtbeginS, crtbeginT, crtend, crtendS, crtfastmath, crtprec32, crtprec64, crtprec80}.o', flag:'gcc crt', en:E.Y, fmt:'ELF .o', arch:'x86_64 + i686' },
+    { name:'${TARGET}/include/c++/${VER}/ (C++23/26 全套 ~100 個 header)', flag:'CT_CC_LANG_CXX=y', en:E.Y, fmt:'text', arch:'—' },
+    { name:'${TARGET}/lib(64)/{libstdc++.so.6, .a, libstdc++fs.a, libstdc++exp.a, libsupc++.a}', flag:'CT_CC_GCC_LIBSTDCXX=y', en:E.Y, fmt:'ELF .so + .a', arch:'x86_64 + i686' },
+    { name:'${TARGET}/lib(64)/libgomp.so.1 + .a + .spec', flag:'CT_CC_GCC_LIBGOMP=y', en:E.Y, fmt:'ELF', arch:'x86_64 + i686' },
+    { name:'${TARGET}/lib(64)/libquadmath.so.0 + .a', flag:'CT_CC_GCC_LIBQUADMATH=y', en:E.Y, fmt:'ELF', arch:'x86_64 + i686' },
+    { name:'${TARGET}/lib(64)/libatomic.so.1 + .a', flag:'C11/C++11 atomic', en:E.Y, fmt:'ELF', arch:'x86_64 + i686' },
+    { name:'${TARGET}/lib(64)/libssp.so.0 + .a', flag:'CT_CC_GCC_LIBSSP=n', en:E.N, fmt:'—', arch:'glibc 自帶 SSP' },
+    { name:'${TARGET}/lib(64)/libitm.so.1 + .a', flag:'--disable-libitm', en:E.N, fmt:'—', arch:'GCC 15 + glibc 2.12 衝突' },
+    { name:'${TARGET}/lib(64)/{libasan, libtsan, libubsan, liblsan, libhwasan}.so', flag:'CT_CC_GCC_LIBSANITIZER=n', en:E.N, fmt:'—', arch:'—' },
+    { name:'${TARGET}/lib(64)/{libmpx, libmpxwrappers}.so', flag:'CT_CC_GCC_LIBMPX=n', en:E.N, fmt:'—', arch:'GCC 9+ 已棄' },
+    { name:'share/gcc-${VER}/python/libstdcxx/v6/', flag:'gdb pretty-printer', en:E.Y, fmt:'text Python', arch:'—' },
+  ],
+  13: [{ name:'(glibc backend: no-op — same as step 7)', flag:'—', en:E.N, fmt:'—', arch:'—' }],
+  14: [
+    { name:'sysroot/usr/lib(64)/libgmp.so libmpfr.so libmpc.so libisl.so libelf.so libexpat.so + .a', flag:'CT_*_TARGET=y', en:E.N, fmt:'若開: ELF .so + .a', arch:'x86_64 + i686' },
+    { name:'sysroot/usr/include/{gmp.h, mpfr.h, mpc.h, isl/*.h, libelf.h, expat.h}', flag:'同上', en:E.N, fmt:'若開: text', arch:'—' },
+  ],
+  15: [
+    { name:'sysroot/usr/lib(64)/libiberty.a', flag:'CT_BINUTILS_FOR_TARGET_IBERTY', en:E.N, fmt:'若開: ELF .a', arch:'x86_64 + i686' },
+    { name:'sysroot/usr/lib(64)/libbfd.a', flag:'CT_BINUTILS_FOR_TARGET_BFD', en:E.N, fmt:'若開: ELF .a', arch:'x86_64 + i686' },
+    { name:'sysroot/usr/include/{bfd.h, dis-asm.h, symcat.h, libiberty.h, demangle.h}', flag:'同上', en:E.N, fmt:'若開: text', arch:'—' },
+    { name:'⚠ 注意：此 step 從不產 as/ld 那種 binary！只產 library', flag:'命名誤導', en:E.N, fmt:'—', arch:'—' },
+  ],
+  16: [
+    { name:'bin/${TARGET}-gdb', flag:'CT_DEBUG_GDB=y', en:E.Y, fmt:'Mach-O ◆', arch:'HOST → 解析 x86_64 ELF + DWARF' },
+    { name:'bin/${TARGET}-gdb-add-index', flag:'CT_GDB_CROSS=y', en:E.Y, fmt:'Mach-O', arch:'HOST' },
+    { name:'share/gdb/python/gdb/ (command/, printer/, function/)', flag:'CT_GDB_CROSS_PYTHON=y', en:E.Y, fmt:'text Python', arch:'—' },
+    { name:'share/gdb/syscalls/*.xml', flag:'syscall catch', en:E.Y, fmt:'text', arch:'—' },
+    { name:'${TARGET}/debug-root/usr/bin/gdbserver', flag:'CT_GDB_GDBSERVER', en:E.N, fmt:'—', arch:'你 defconfig 沒設' },
+  ],
+  17: [{ name:'(test_suite default skip — CT_TEST_SUITE=n)', flag:'—', en:E.N, fmt:'—', arch:'—' }],
+  18: [
+    { name:'bin/${TARGET}-populate (shell script)', flag:'!CT_BARE_METAL', en:E.Y, fmt:'shell script', arch:'—' },
+    { name:'bin/${TARGET}-ldd', flag:'CT_LIBC_XLDD', en:E.N, fmt:'—', arch:'你沒設' },
+    { name:'bin/${TARGET_ALIAS}-* symlinks', flag:'unprefixed alias', en:E.Y, fmt:'symlink', arch:'—' },
+    { name:'strip 所有 host binary', flag:'CT_STRIP_HOST_TOOLCHAIN_EXECUTABLES=y', en:E.Y, fmt:'action', arch:'—' },
+    { name:'share/licenses/ (GPL / LGPL / ...)', flag:'CT_INSTALL_LICENSES=y', en:E.Y, fmt:'text', arch:'—' },
+    { name:'build.log.bz2', flag:'CT_LOG_TO_FILE=y + CT_LOG_FILE_COMPRESS=y', en:E.Y, fmt:'bzip2 text', arch:'—' },
+    { name:'刪 share/man + share/info', flag:'CT_REMOVE_DOCS=y', en:E.Y, fmt:'action', arch:'—' },
+    { name:'chmod -R a-w prefix', flag:'CT_PREFIX_DIR_RO', en:E.N, fmt:'—', arch:'你沒設' },
+  ],
+};
+
+// Layout: 3 rows × 6 cols
+const NW = 158, NH = 78, GX = 178, GY = 138, OX = 30, OY = 30;
+steps.forEach((s, i) => {
+  const row = Math.floor(i / 6);
+  const col = i % 6;
+  s.x = OX + col * GX;
+  s.y = OY + row * GY;
+});
+
+// ──────────────────────────────────────────────────────────
+// State
+// ──────────────────────────────────────────────────────────
+const state = {
+  selected: null,
+  pinned: new Set(),
+  filters: {
+    hideNoop: false,
+    onlyElf: false,
+    showTools: true,
+    highlightElfEdges: false,
+  },
+};
+
+// ──────────────────────────────────────────────────────────
+// Render
+// ──────────────────────────────────────────────────────────
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('pipeline');
+const edgesG = document.getElementById('edges');
+const nodesG = document.getElementById('nodes');
+
+function elfEdge(from, to) {
+  // an edge is "ELF link-time" if the source step produces ELF artifacts
+  // that the target step consumes as link-time input. Only step 10 produces
+  // the ELF libc that 12/14/15 link against.
+  return from === 10 && (to === 12 || to === 14 || to === 15);
+}
+
+function drawEdges() {
+  edgesG.innerHTML = '';
+  const visibleNs = new Set(visibleSteps().map(s => s.n));
+  steps.forEach(s => {
+    if (!visibleNs.has(s.n)) return;
+    s.deps.forEach(dn => {
+      const from = steps.find(x => x.n === dn);
+      if (!from || !visibleNs.has(from.n)) return;
+      const isElf = elfEdge(from.n, s.n);
+      const x1 = from.x + NW/2, y1 = from.y + NH;
+      const x2 = s.x + NW/2, y2 = s.y;
+      // curved bezier
+      const my = (y1 + y2) / 2;
+      const path = document.createElementNS(NS, 'path');
+      path.setAttribute('d', `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`);
+      path.setAttribute('class', 'edge' +
+        (isElf ? ' elf' : '') +
+        (state.filters.highlightElfEdges && isElf ? ' highlight' : '') +
+        (state.selected != null && (s.n === state.selected || from.n === state.selected) ? ' highlight' :
+         state.selected != null ? ' dimmed' : ''));
+      path.setAttribute('marker-end',
+        state.selected != null && (s.n === state.selected || from.n === state.selected) ? 'url(#arr-hl)' :
+        isElf ? 'url(#arr-elf)' : 'url(#arr)');
+      edgesG.appendChild(path);
+    });
+  });
+}
+
+function visibleSteps() {
+  return steps.filter(s => {
+    if (state.filters.hideNoop && !s.runs) return false;
+    if (state.filters.onlyElf && !s.elfIn) return false;
+    return true;
+  });
+}
+
+function drawNodes() {
+  nodesG.innerHTML = '';
+  const vs = new Set(visibleSteps().map(s => s.n));
+  steps.forEach(s => {
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('class', 'node' +
+      (state.selected === s.n ? ' selected' : '') +
+      (vs.has(s.n) ? '' : ' hidden'));
+    g.setAttribute('transform', `translate(${s.x}, ${s.y})`);
+    g.addEventListener('click', () => selectStep(s.n));
+
+    const cat = CAT[s.cat];
+    const rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('class', 'node-bg');
+    rect.setAttribute('width', NW);
+    rect.setAttribute('height', NH);
+    rect.setAttribute('rx', 7);
+    rect.setAttribute('fill', cat.color);
+    rect.setAttribute('opacity', s.runs ? '1' : '0.45');
+    g.appendChild(rect);
+
+    // top: step number + badge
+    const stepNum = document.createElementNS(NS, 'text');
+    stepNum.setAttribute('class', 'step-num');
+    stepNum.setAttribute('x', 10);
+    stepNum.setAttribute('y', 16);
+    stepNum.textContent = `#${s.n}`;
+    g.appendChild(stepNum);
+
+    if (cat.badge) {
+      const badge = document.createElementNS(NS, 'text');
+      badge.setAttribute('class', 'badge');
+      badge.setAttribute('x', NW - 10);
+      badge.setAttribute('y', 17);
+      badge.setAttribute('text-anchor', 'end');
+      badge.textContent = cat.badge;
+      g.appendChild(badge);
+    }
+
+    if (s.isBridge) {
+      const bridgeBadge = document.createElementNS(NS, 'text');
+      bridgeBadge.setAttribute('class', 'badge');
+      bridgeBadge.setAttribute('x', NW - (cat.badge ? 30 : 10));
+      bridgeBadge.setAttribute('y', 17);
+      bridgeBadge.setAttribute('text-anchor', 'end');
+      bridgeBadge.setAttribute('fill', '#eab308');
+      bridgeBadge.textContent = '◆';
+      g.appendChild(bridgeBadge);
+    }
+
+    // step name (truncated if needed)
+    const name = document.createElementNS(NS, 'text');
+    name.setAttribute('class', 'step-name');
+    name.setAttribute('x', 10);
+    name.setAttribute('y', 36);
+    const dispName = s.name.length > 22 ? s.name.slice(0, 20) + '…' : s.name;
+    name.textContent = dispName;
+    g.appendChild(name);
+
+    // purpose snippet
+    const purpose = document.createElementNS(NS, 'text');
+    purpose.setAttribute('class', 'step-purpose');
+    purpose.setAttribute('x', 10);
+    purpose.setAttribute('y', 52);
+    const dispPurp = s.purpose.length > 28 ? s.purpose.slice(0, 26) + '…' : s.purpose;
+    purpose.textContent = dispPurp;
+    g.appendChild(purpose);
+
+    // tools line (if showTools)
+    if (state.filters.showTools && s.tools) {
+      const tools = document.createElementNS(NS, 'text');
+      tools.setAttribute('class', 'step-purpose');
+      tools.setAttribute('x', 10);
+      tools.setAttribute('y', 67);
+      tools.setAttribute('opacity', '0.7');
+      tools.textContent = `cc: ${s.tools.cc.replace('step ', 'S').slice(0, 18)}`;
+      g.appendChild(tools);
+    }
+
+    nodesG.appendChild(g);
+  });
+}
+
+function render() {
+  drawEdges();
+  drawNodes();
+  renderDetail();
+  renderPinned();
+  updatePrompt();
+}
+
+// ──────────────────────────────────────────────────────────
+// Detail panel
+// ──────────────────────────────────────────────────────────
+const detailEl = document.getElementById('detail-content');
+function renderDetail() {
+  if (state.selected == null) {
+    detailEl.innerHTML = `<div class="detail-empty"><div class="big">↖︎</div>
+      點任何 step node 看細節：<br>
+      目的、用什麼工具、輸入 / 輸出、為什麼依賴哪幾個前面的 step。</div>`;
+    return;
+  }
+  const s = steps.find(x => x.n === state.selected);
+  const cat = CAT[s.cat];
+  const isPinned = state.pinned.has(s.n);
+  const depHtml = s.deps.length ? s.deps.map(dn => {
+    const d = steps.find(x => x.n === dn);
+    const elfDep = elfEdge(d.n, s.n);
+    return `<li>
+      <span class="dep-num">#${d.n}</span>
+      <span>
+        <strong>${d.name}</strong>${elfDep ? ' <span class="dep-elf">⭐ ELF link-time</span>' : ''}<br>
+        <span style="color:var(--muted)">${d.purpose}</span>
+      </span>
+    </li>`;
+  }).join('') : `<li style="color:var(--dim)">沒有上游依賴（root step）</li>`;
+
+  detailEl.innerHTML = `
+    <div class="detail-card">
+      <span class="step-badge" style="background:${cat.color}">#${s.n} ${cat.badge}</span>
+      <h3>${s.name}</h3>
+      <div class="category">${cat.label}${s.runs ? '' : ' · 此 build 不會跑'}</div>
+      <div class="pin-toggle ${isPinned ? 'active' : ''}" id="pin-btn">${isPinned ? '✓ 已 pin' : '📌 Pin 到 prompt'}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="label">目的</div>
+      <div class="value">${s.purpose}</div>
+    </div>
+
+    ${s.tools ? `
+    <div class="detail-section">
+      <div class="label">用什麼工具</div>
+      <div class="value">cc: ${s.tools.cc}\nas: ${s.tools.as}\nld: ${s.tools.ld}</div>
+    </div>` : ''}
+
+    <div class="detail-section">
+      <div class="label">輸入材料（含 ELF？）</div>
+      <div class="value ${s.elfIn ? 'elf-mark' : ''}">${s.inputs}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="label">輸出 binary 自己格式</div>
+      <div class="value ${s.cat === 'BOOTSTRAP' ? 'bootstrap-mark' : ''}">${s.binaryFormat}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="label">binary 操作 / 產出的目標格式 ${s.isBridge ? '◆' : ''}</div>
+      <div class="value ${s.isBridge ? 'bridge-mark' : ''}">${s.operatesOn}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="label">依賴哪些 step</div>
+      <ul class="dep-list">${depHtml}</ul>
+    </div>
+
+    ${s.note ? `<div class="detail-section">
+      <div class="label">Note</div>
+      <div class="value" style="background:var(--panel-2); border-left:3px solid var(--accent); white-space:normal">${s.note}</div>
+    </div>` : ''}
+
+    ${(() => {
+      const arts = artifactsByStep[s.n] || [];
+      if (!arts.length) return '';
+      const y = arts.filter(a => a.en === E.Y).length;
+      const n = arts.filter(a => a.en === E.N).length;
+      const p = arts.filter(a => a.en === E.P).length;
+      return `<div class="detail-section">
+        <div class="label">完整產物清單（${arts.length} 項）</div>
+        <div class="artifact-summary">
+          <span class="a-en y">✓ ${y}</span> 跑 ·
+          <span class="a-en n">✗ ${n}</span> 沒跑 ·
+          ${p ? `<span class="a-en p">⚠ ${p}</span> partial · ` : ''}
+          依你 defconfig
+        </div>
+        <table class="artifact-table">
+          ${arts.map(a => `
+            <tr class="${a.en === E.N ? 'disabled' : ''}">
+              <td class="a-en ${a.en}">${a.en === E.Y ? '✓' : a.en === E.P ? '⚠' : '✗'}</td>
+              <td>
+                <div class="a-name">${a.name}</div>
+                <div class="a-meta">
+                  <span style="color:var(--accent)">${a.flag}</span>
+                  ${a.fmt && a.fmt !== '—' ? ` · ${a.fmt}` : ''}
+                  ${a.arch && a.arch !== '—' ? ` · ${a.arch}` : ''}
+                </div>
+              </td>
+            </tr>
+          `).join('')}
+        </table>
+      </div>`;
+    })()}
+  `;
+
+  document.getElementById('pin-btn').addEventListener('click', () => {
+    if (state.pinned.has(s.n)) state.pinned.delete(s.n);
+    else state.pinned.add(s.n);
+    render();
+  });
+}
+
+function selectStep(n) {
+  state.selected = (state.selected === n) ? null : n;
+  render();
+}
+
+// ──────────────────────────────────────────────────────────
+// Pinned list
+// ──────────────────────────────────────────────────────────
+function renderPinned() {
+  const list = document.getElementById('pinned-list');
+  document.getElementById('pin-count').textContent = state.pinned.size;
+  if (!state.pinned.size) {
+    list.innerHTML = `<div style="color:var(--dim); font-size:11px; padding:6px 0;">點 node 後 pin 起來收進 prompt</div>`;
+    return;
+  }
+  const items = [...state.pinned].sort((a,b) => a-b).map(n => {
+    const s = steps.find(x => x.n === n);
+    const cat = CAT[s.cat];
+    return `<div class="pinned-item">
+      <span style="color:${cat.color}; font-weight:700">#${n}</span>
+      <span>${s.name}</span>
+      <span class="x" data-n="${n}">×</span>
+    </div>`;
+  }).join('');
+  list.innerHTML = items;
+  list.querySelectorAll('.x').forEach(el => {
+    el.addEventListener('click', e => {
+      state.pinned.delete(+e.target.dataset.n);
+      render();
+    });
+  });
+}
+
+// ──────────────────────────────────────────────────────────
+// Prompt output
+// ──────────────────────────────────────────────────────────
+function updatePrompt() {
+  const lines = [];
+  lines.push('我在看 crosstool-ng 1.25 的 18-step pipeline explorer（Mac → Linux x86_64 + glibc 2.12 cross toolchain）。');
+
+  const fparts = [];
+  if (state.filters.hideNoop) fparts.push('只看實際會跑的 13 step（隱藏 framework no-op/skip）');
+  if (state.filters.onlyElf) fparts.push('focus 在「吃 ELF 當 input」的 step（step 12, 14, 15）');
+  if (state.filters.highlightElfEdges) fparts.push('把 ELF link-time 依賴邊加粗');
+  if (fparts.length) lines.push('\n當前 view：' + fparts.join('、') + '。');
+
+  if (state.pinned.size) {
+    lines.push('\n關注的 step：');
+    [...state.pinned].sort((a,b) => a-b).forEach(n => {
+      const s = steps.find(x => x.n === n);
+      const tags = [];
+      if (s.isBridge) tags.push('◆跨格式 bridge');
+      if (s.elfIn) tags.push('⭐吃ELF');
+      if (s.cat === 'BOOTSTRAP') tags.push('★ELF bootstrap');
+      if (s.cat === 'NOOP') tags.push('✗no-op');
+      const tag = tags.join('・');
+      lines.push(`  • step ${s.n} ${s.name}${tag ? '（' + tag + '）' : ''}`);
+      lines.push(`      binary 自己：${s.binaryFormat}`);
+      lines.push(`      操作 / 產出：${s.operatesOn}`);
+    });
+    const hasBridge = [...state.pinned].some(n => steps.find(x => x.n === n).isBridge);
+    lines.push('\n請就上面這幾個 step 回答：');
+    let qn = 1;
+    lines.push(`${qn++}. 為什麼依賴鏈是這樣設計的？`);
+    if (hasBridge) {
+      lines.push(`${qn++}. 這些 ◆ bridge step 的 binary 為什麼是 Mach-O 但操作 ELF？\`--host\` vs \`--target\` 兩條軸如何分工？`);
+    }
+    lines.push(`${qn++}. 如果 libc 改成 musl，這幾個 step 的 runs/skip 狀態會怎麼變？`);
+    lines.push(`${qn++}. 換成 canadian build（host ≠ build），cc_for_build (step 11) 會跑哪些事？`);
+  } else if (state.selected != null) {
+    const s = steps.find(x => x.n === state.selected);
+    lines.push(`\nfocus 在 step ${s.n} ${s.name}（${CAT[s.cat].label}${s.isBridge ? ' · ◆ 跨格式 bridge' : ''}）。`);
+    lines.push(`  • binary 自己格式：${s.binaryFormat}`);
+    lines.push(`  • 操作 / 產出的格式：${s.operatesOn}`);
+    lines.push(`  • 輸入：${s.inputs}`);
+    lines.push(`  • 依賴：${s.deps.length ? 'step ' + s.deps.join(', ') : '（無）'}`);
+    lines.push(`\n請解釋為什麼這 step 的兩條格式軸（binary 自己 vs 操作對象）是這樣設計的，以及它在 pipeline 內扮演什麼角色。`);
+  } else {
+    lines.push('\n請幫我從這個 pipeline 出發解釋一個我選的 step 為什麼必須在那個位置，或者 ELF artifact 怎麼在 pipeline 內流動。');
+  }
+
+  document.getElementById('prompt').textContent = lines.join('\n');
+}
+
+// ──────────────────────────────────────────────────────────
+// Wiring
+// ──────────────────────────────────────────────────────────
+document.querySelectorAll('aside.left input[type=checkbox]').forEach(cb => {
+  cb.addEventListener('change', () => {
+    state.filters.hideNoop = document.getElementById('f-hide-noop').checked;
+    state.filters.onlyElf = document.getElementById('f-only-elf').checked;
+    state.filters.showTools = document.getElementById('f-show-tools').checked;
+    state.filters.highlightElfEdges = document.getElementById('f-highlight-elf-edges').checked;
+    render();
+  });
+});
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const preset = btn.dataset.preset;
+    const f = state.filters;
+    if (preset === 'full') {
+      f.hideNoop = false; f.onlyElf = false; f.showTools = true; f.highlightElfEdges = false;
+      state.pinned.clear(); state.selected = null;
+    } else if (preset === 'actual') {
+      f.hideNoop = true; f.onlyElf = false; f.showTools = true; f.highlightElfEdges = false;
+    } else if (preset === 'elf-only') {
+      f.hideNoop = true; f.onlyElf = true; f.showTools = true; f.highlightElfEdges = true;
+    } else if (preset === 'bootstrap') {
+      f.hideNoop = false; f.onlyElf = false; f.showTools = true; f.highlightElfEdges = true;
+      state.pinned = new Set([9, 10, 12]);
+      state.selected = 10;
+    } else if (preset === 'bridge') {
+      f.hideNoop = true; f.onlyElf = false; f.showTools = false; f.highlightElfEdges = false;
+      state.pinned = new Set([3, 6, 9, 12, 15]);
+      state.selected = 9;
+    }
+    document.getElementById('f-hide-noop').checked = f.hideNoop;
+    document.getElementById('f-only-elf').checked = f.onlyElf;
+    document.getElementById('f-show-tools').checked = f.showTools;
+    document.getElementById('f-highlight-elf-edges').checked = f.highlightElfEdges;
+    render();
+  });
+});
+
+document.getElementById('copy').addEventListener('click', () => {
+  navigator.clipboard.writeText(document.getElementById('prompt').textContent).then(() => {
+    const btn = document.getElementById('copy');
+    btn.classList.add('copied');
+    btn.textContent = 'Copied!';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.textContent = 'Copy Prompt';
+    }, 1200);
+  });
+});
+
+// Initial render
+render();
+</script>
+</body>
+</html>

@@ -56,10 +56,10 @@ CC=x86_64-centos6-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build .
   - [Insight 1：跨平台編譯有「三」條軸線](#insight-1跨平台編譯有三條軸線不是兩條)
   - [Insight 2：glibc symbol versioning 只能往前相容](#insight-2glibc-symbol-versioning-只能往前相容)
   - [Insight 3：toolchain 是一束 compiler + binutils + sysroot](#insight-3toolchain-是一束compiler--binutils--sysroot不只-compiler)
-- [Mechanism 1：crosstool-ng bootstrap 的 16 個 step](#mechanism-1crosstool-ng-bootstrap-的-16-個-step細節版)
+- [Mechanism 1：crosstool-ng bootstrap 的 18 個 step](#mechanism-1crosstool-ng-bootstrap-的-18-個-step細節版)
   - [名詞先定](#名詞先定)
   - [for_build vs for_host 分類](#一個關鍵概念for_buildvsfor_host分類)
-  - [完整 16 step](#完整-16-step)
+  - [完整 18 step](#完整-18-step)
   - [為什麼順序非變不可](#為什麼順序非變不可)
 - [Mechanism 2：sysroot 解剖](#mechanism-2sysroot-解剖)
 - [Mechanism 3：為什麼 macOS 需要 case-sensitive 檔案系統](#mechanism-3為什麼-macos-需要-case-sensitive-檔案系統)
@@ -195,9 +195,9 @@ cross toolchain 每樣都換變體：
 
 ---
 
-## Mechanism 1：crosstool-ng bootstrap 的 16 個 step（細節版）
+## Mechanism 1：crosstool-ng bootstrap 的 18 個 step（細節版）
 
-ct-ng 不能直接下載 GCC 跑就好。GCC 要 glibc 才 build 完整、glibc 要 GCC 才能編 — 雞生蛋蛋生雞。解法是把 build 拆成 16 個有序 step、每 step 砍掉部分依賴：
+ct-ng 不能直接下載 GCC 跑就好。GCC 要 glibc 才 build 完整、glibc 要 GCC 才能編 — 雞生蛋蛋生雞。解法是把 build 拆成 18 個有序 step（ct-ng 1.25 canonical CT_STEPS，見 `ct-ng.in:271–290`；1.28 多一個 `linker` step 變 19）、每 step 砍掉部分依賴：
 
 ### 名詞先定
 
@@ -223,44 +223,377 @@ ct-ng 把 component 分兩類：
 
 `m4` / `automake` 只有 for_build（user 不用 m4），`gmp` / `mpfr` 只有 for_host（gcc 內部 link 它們）。`ncurses` 兩個都有（特殊 — for_build 出 `tic` 給 for_host 自己用）。
 
-### 完整 16 step
+### 完整 18 step
 
-| # | Step name | 編譯器 | 組譯器 | 連結器 | 目的 | 輸出格式 |
-|---|---|---|---|---|---|---|
-| 1 | companion_tools_for_build | brew gcc-14 | Apple as | Apple ld | m4/automake 等小工具 | Mac Mach-O |
-| 2 | companion_libs_for_build | brew gcc-14 | Apple as | Apple ld | ncurses (給 step 5 用 tic) | Mac Mach-O .a |
-| 3 | binutils_for_build | brew gcc-14 | Apple as | Apple ld | cross-as / cross-ld 「給 ct-ng 中間用」 | Mac Mach-O |
-| 4 | companion_tools_for_host | brew gcc-14 | Apple as | Apple ld | 同 step 1 但裝 PREFIX_DIR | Mac Mach-O |
-| 5 | companion_libs_for_host | brew gcc-14 | Apple as | Apple ld | gmp/mpfr/mpc/isl/ncurses/zlib/libiconv/gettext | Mac Mach-O .a |
-| 6 | binutils_for_host | brew gcc-14 | Apple as | Apple ld | 最終 cross-binutils（user 用） | Mac Mach-O |
-| 7 | cc_core (stage-1 GCC) | brew gcc-14 | Apple as | Apple ld | 殘缺 cross-gcc，下一步編 glibc 用 | Mac Mach-O |
-| 8 | kernel_headers | (純 file copy) | - | - | sysroot/usr/include/linux/* | 文字 .h |
-| 9 | libc_start_files (glibc 第一刀) | step 7 stage-1 gcc | step 3 cross-as | (no link) | sysroot/usr/lib/crt1.o, headers | Linux ELF .o |
-| 10 | cc_for_build (stage-1.5 GCC) | brew gcc-14 | Apple as | Apple ld | 升級殘缺 gcc，能 build 完整 libgcc | Mac Mach-O |
-| 11 | libc (glibc 第二刀，完整) | step 10 stage-1.5 gcc | step 3 cross-as | step 3 cross-ld | sysroot/lib/libc.so.6 等 | Linux ELF .so / .a |
-| 12 | cc_for_host (stage-2 GCC, **★ 最終 ★**) | brew gcc-14 | Apple as | Apple ld | user 用的 cross-gcc + libstdc++ | Mac Mach-O + Linux ELF |
-| 13 | companion_libs_for_target | step 12 cross-gcc | step 6 cross-as | step 6 cross-ld | sysroot/usr/lib/libgmp.so 等 | Linux ELF .so |
-| 14 | binutils_for_target | step 12 cross-gcc | step 6 cross-as | step 6 cross-ld | sysroot/usr/bin/as 等 | Linux ELF |
-| 15 | debug | (skipped, CT_DEBUG_GDB=n) | - | - | gdb cross-debugger | - |
-| 16 | test_suite | (skipped) | - | - | optional test | - |
+ct-ng 1.25 canonical CT_STEPS（`ct-ng.in:271–290`）。標 ✗ 的 step 在「glibc + cross toolchain type」這個組合下是 no-op／skip，但 framework 仍然會列出。
+
+| # | Step name | 編譯器 | 組譯器 | 連結器 | 目的 | 輸入材料（含 ELF？） | 輸出 binary 自己格式 | binary 操作 / 產出的目標格式 ◆ |
+|---|---|---|---|---|---|---|---|---|
+| 1 ⚠ | companion_tools_for_build | brew gcc-14 | Apple as | Apple ld | m4/autoconf/automake/libtool/dtc/bison/make 等小工具 | 各工具 source tarball（text）；**逐個 gated 在 `CT_COMP_TOOLS_<X>=y`**⁴ | Mac Mach-O | —（通用 text 工具） |
+| 2 ⚠ | companion_libs_for_build | brew gcc-14 | Apple as | Apple ld | ncurses 的 `tic`（其它 lib 在 cross type 都 skip） | ncurses source（text）；其它 9 個 lib 各自 `case ... cross) return 0;;` 跳過⁵ | Mac Mach-O .a | —（library，不是工具） |
+| 3 ✗ | binutils_for_build | - | - | - | **cross type: skip²** | - | - | - |
+| 4 ✗ | companion_tools_for_host | - | - | - | **cross type: skip²** | - | - | - |
+| 5 | companion_libs_for_host | brew gcc-14 | Apple as | Apple ld | gmp/mpfr/mpc/isl/ncurses/zlib/libiconv/gettext | gmp/mpfr/mpc/isl/ncurses/... source（text） | Mac Mach-O .a | —（library） |
+| 6 | binutils_for_host | brew gcc-14 | Apple as | Apple ld | 最終 cross-binutils（user 用） | binutils source（text） | **Mac Mach-O ◆** | **x86_64 ELF**（同 step 3，差別在裝在 PREFIX_DIR，是最後 user shell 會呼到的 `x86_64-...-as`/`-ld`） |
+| 7 ✗ | libc_headers | - | - | - | **glibc backend: no-op¹** | - | - | - |
+| 8 | kernel_headers | (純 file copy) | - | - | sysroot/usr/include/linux/* | Linux kernel tarball → `headers_install`（text → text） | 文字 .h | —（不是 binary） |
+| 9 | cc_core (stage-1 GCC) | brew gcc-14 | Apple as | Apple ld | 殘缺 cross-gcc，下一步編 glibc 用 | GCC source（text）；**不吃 libc**（`--without-headers --with-newlib`） | **Mac Mach-O ◆** | **x86_64 ELF**（cross-gcc 吃 .c text → 走 cpp/cc1 → call step 3 cross-as → 吐 ELF .o） |
+| 10 | libc_main (glibc 完整 build) | step 9 stage-1 gcc | step 3 cross-as | step 3 cross-ld | sysroot/lib/libc.so.6 + crt*.o + headers **一輪全裝**³ | glibc source（text）+ step 9 cc_core (Mach-O 工具) + step 8 kernel headers（text）→ **pipeline 第一個 ELF 出爐** | **Linux ELF .so / .a / crt\*.o + text headers** | —（library + crt artifacts，不是工具） |
+| 11 ✗ | cc_for_build (stage-1.5 GCC) | - | - | - | **cross toolchain type: skip²** | - | - | - |
+| 12 | cc_for_host (★ 最終 GCC ★) | brew gcc-14 | Apple as | Apple ld | user 用的 cross-gcc + g++ + libstdc++ | GCC source（text）+ **step 10 libc.so/.a/crt（ELF）⭐ ← 第一次吃 ELF**（libstdc++ link against ELF libc） | **Mac Mach-O gcc/g++ ◆**（user `x86_64-...-gcc` 主程式）+ 隨包 Linux ELF libstdc++.so/.a | **x86_64 ELF**（gcc 跑起來 emit ELF code；隨包的 libstdc++ 本身就是 ELF artifact） |
+| 13 ✗ | libc_post_cc | - | - | - | **glibc backend: no-op¹** | - | - | - |
+| 14 | companion_libs_for_target | step 12 cross-gcc | step 6 cross-as | step 6 cross-ld | sysroot/usr/lib/libgmp.so 等 | gmp/mpfr/mpc source（text）+ **step 10 libc（ELF）⭐** | Linux ELF .so | —（library，給 target user binary link） |
+| 15 | binutils_for_target | step 12 cross-gcc | step 6 cross-as | step 6 cross-ld | sysroot/usr/bin/as 等 | binutils source（text）+ **step 10 libc（ELF）⭐** | **Linux ELF binary ◆**（這次 binary 本身就是 ELF，跑在 target Linux 上） | **x86_64 ELF**（target-native binutils） |
+| 16 ✗ | debug | - | - | - | gdb cross-debugger（CT_DEBUG_GDB=n 跳過） | - | - | - |
+| 17 ✗ | test_suite | - | - | - | optional test（預設跳過） | - | - | - |
+| 18 | finish | (純 cleanup) | - | - | 版本 stamp / manifest / 收尾 | (no compile) | text manifest | — |
+
+◆ 標記「跨格式 bridge」：該 step 產的 binary 本身是某格式（Mach-O 或 ELF），但**操作 / 產出的目標是另一個格式**（都是 x86_64 ELF）。Step 6, 9, 12 是「Mac Mach-O ↔ x86_64 ELF」橋；step 15 反過來「Linux ELF ↔ x86_64 ELF」（target-native，但你 defconfig 沒開）。這是 cross-toolchain 的核心 trick——`--host` 控制 binary 自己格式，`--target` 控制 binary 操作的格式，兩條軸正交。
+⚠ 標記「視 config 才會跑」：step 1 視 `CT_COMP_TOOLS_<X>=y`，step 2 內部各 lib 視 `CT_<X>=y` + cross-type skip。對你 defconfig step 1 整個 skip（沒設任何 CT_COMP_TOOLS），step 2 只 ncurses 跑（GDB-TUI 需要）。
+
+¹ **glibc backend 只實作 `glibc_main()`**（`scripts/build/libc/glibc.sh:34`）。`libc_headers` 跟 `libc_post_cc` 落到 `libc.sh:9–11` 預設 `: ;` no-op。整個 glibc 在 step 10 一次到位（configure + `make all` + `make install` 一輪產出 headers + crt + libc.so + libc.a）。
+   分多刀模式（`headers` / `main` / `post_cc` 其中兩個都有實作）只在 **uClibc-ng** (`main` + `post_cc`) / **musl** (`main` + `post_cc`) / **newlib** (`headers` + `main`) 才出現。
+² **`native|cross) return 0;;` 這個 cross-type skip pattern 不只 step 11，總共 4 個 step 都有**：
+   - step 3 `binutils_for_build`（`scripts/build/binutils/binutils.sh:25–27`）
+   - step 4 `companion_tools_for_host`（`scripts/build/companion_tools.sh:41–46`）
+   - step 11 `cc_for_build`（`scripts/build/cc/gcc.sh:744–746`）
+   - 加上 step 2 companion_libs_for_build 內部各 lib 自己 skip（gmp/mpfr/mpc/isl/zlib/libiconv/gettext/libelf/cloog，**只剩 ncurses 跑**因為要產 `tic`）
+   理由：BUILD=HOST 時 step 5/6 產出的 host-side artifacts 已經夠用了，不需要另外為 BUILD 機器再 build 一份。
+   三階段 GCC（cc_core → cc_for_build → cc_for_host）只在 **canadian**（BUILD/HOST/TARGET 三方都不同）或 **cross-native**（HOST=TARGET≠BUILD）才會跑滿。
+³ glibc 的 configure 階段 `make all` 確實需要 startup files + libgcc 才能 link test program，但實作上 glibc 自己會出 crt 物件作為其 build artifact 的一部分，所以 stage-1 cc_core (`--without-headers --with-newlib --disable-shared`) 加上 glibc 源碼自帶的 crt 構建邏輯就足以單次完成。
+⭐ 標記該 step 把 step 10 產的 ELF 當 link-time input。Step 1–9 都是 source-to-Mach-O，沒 ELF 進來；step 10 是 ELF bootstrap point（source + Mach-O 工具直出 ELF）；step 12+ 才開始 ELF in → ELF/Mach-O out。
+⁴ `scripts/build/companion_tools.sh:8–15`：腳本載入時動態建 `CT_COMP_TOOLS_FACILITY_LIST`，只把 `CT_COMP_TOOLS_<X>=y` 的工具放進 list。你 defconfig 沒設任何一個 → list 是空 → step 1 不產任何 binary（ct-ng 預設假設 host 已裝 GNU autotools 全套）。
+⁵ `scripts/build/companion_libs/`：gmp/mpfr/mpc/isl/cloog/zlib/libiconv/gettext/libelf 的 `_for_build` 函式開頭都有 `case "${CT_TOOLCHAIN_TYPE}" in native|cross) return 0;;`。**只有 ncurses 的 `_for_build` 沒這個 skip**，因為 ncurses_for_host build 內部需要 `tic` 跑在 BUILD 機器上產 terminfo。expat/picolibc/newlib_nano 沒實作 `_for_build`。
+
+### 完整產物清單（不省略「等」）
+
+每 step 把所有「framework 預設可能產的東西」全列。✓=你 defconfig 會產；✗=這個 build 配置下這個 artifact 不出現（gated flag 沒設、cross-type skip、或 glibc no-op）。
+
+#### ⓘ 重要前提：`.a` 是 arch-locked，Mac/Linux 不能互換
+
+`.a` 是 `ar` archive，裡面包的是 `.o` object file。`.o` 帶具體 machine code + format header：
+- **Mach-O ARM64 `.a`**（step 5 產的 host-side `libgmp.a` 等）只能 link 進 Mach-O ARM64 binary（cross-gcc / cross-gdb 本身）
+- **Linux ELF x86_64 `.a`**（step 10 產的 `libc.a` / step 12 產的 `libstdc++.a` 等）只能 link 進 Linux ELF x86_64 binary（user 的 target output）
+- 兩者**完全互不相容**。Apple `ld` 不認 ELF `.o`，GNU `ld` 不認 Mach-O `.o`，連讀都讀不開
+- Mac 有 `lipo` 把多 arch 合成 fat / universal `.a`，但**只能合 Mach-O 內的不同 arch**（arm64 + x86_64 同 Mac 內），不能合到 ELF
+- ct-ng 全程不產 fat binary。每個 step 產的 binary/`.a`/`.so` 都是 **單一 `(format, arch)` 組合**
+
+→ 推論：step 5 的 `libgmp.a`（Mach-O ARM64）跟 step 14（若開）的 target `libgmp.so`（Linux ELF x86_64）是**完全不同的 archive**，不會相互替代。
+
+#### Step 1 — companion_tools_for_build  ✗ 你的 defconfig 不跑
+
+| 可能 artifact | gated flag | 你 defconfig | 格式 | Arch | 用途 |
+|---|---|---|---|---|---|
+| `m4` | `CT_COMP_TOOLS_M4` | ✗ | Mach-O | BUILD（Mac arm64） | ct-ng 內部 autoconf 用 |
+| `autoconf` | `CT_COMP_TOOLS_AUTOCONF` | ✗ | Mach-O | BUILD | configure 產生 |
+| `automake` | `CT_COMP_TOOLS_AUTOMAKE` | ✗ | Mach-O | BUILD | Makefile.in 產生 |
+| `libtool` `libtoolize` | `CT_COMP_TOOLS_LIBTOOL` | ✗ | Mach-O | BUILD | libtool wrapper |
+| `make` | `CT_COMP_TOOLS_MAKE` | ✗ | Mach-O | BUILD | GNU make |
+| `dtc` | `CT_COMP_TOOLS_DTC` | ✗ | Mach-O | BUILD | device tree compiler |
+| `bison` | `CT_COMP_TOOLS_BISON` | ✗ | Mach-O | BUILD | parser generator |
+
+預設假設 host 已裝（macOS：`brew install autoconf automake libtool m4 bison`；Linux container：`apt-get install build-essential autoconf automake libtool m4 bison`）。
+
+#### Step 2 — companion_libs_for_build  ⚠ 部分跑（只 ncurses）
+
+| 可能 artifact | gated flag | 你 defconfig | 格式 | Arch | 用途 |
+|---|---|---|---|---|---|
+| `tic` (binary) | ncurses no-skip | ⚠ 視 `CT_NCURSES` | Mach-O | BUILD | terminfo compiler；ncurses_for_host build 內部會用 |
+| `libncurses.a` (BUILD) | 同上 | ⚠ 同上 | Mach-O .a | BUILD | 給 `tic` 自己 link |
+| `libgmp.a` (BUILD) `libmpfr.a` `libmpc.a` `libisl.a` `libcloog.a` `libelf.a` `libzlib.a` `libiconv.a` `libgettext.a` | `CT_<X>=y` + cross-skip | ✗ | — | — | cross type 全 skip（step 5 已產 host 版本） |
+
+`CT_NCURSES` 通常被 `CT_DEBUG_GDB && CT_GDB_CROSS_TUI` 隱含 select；你 defconfig 有 `CT_DEBUG_GDB=y` 但 TUI 預設未必開——若實際 build 有跑 ncurses_for_build 就會多 `tic` + `libncurses.a` BUILD 版。
+
+#### Step 3 — binutils_for_build  ✗ cross type skip
+
+`binutils.sh:25-27` cross/native → `return 0`。若是 canadian 才會產（host = BUILD arch Mach-O / ELF）：`${TARGET}-as / -ld / -ar / -ranlib / -nm / -objcopy / -objdump / -readelf / -strip / -size / -strings / -addr2line / -c++filt / -elfedit`。
+
+#### Step 4 — companion_tools_for_host  ✗ cross type skip
+
+`companion_tools.sh:41-46` cross/native → `return`。若是 canadian，產同 step 1 的工具但裝 PREFIX_DIR。
+
+#### Step 5 — companion_libs_for_host  ✓ 跑
+
+裝在 `$CT_HOST_COMPLIBS_DIR`（一般 `=$CT_BUILDTOOLS_PREFIX_DIR`）。所有產物是 **HOST arch（Mac arm64）Mach-O `.a`** + headers。最後會被 step 6/9/12 的 binutils/GCC static link 進去。
+
+| 可能 artifact | gated flag | 你 defconfig | 格式 | Arch | 用途 / 哪邊 link |
+|---|---|---|---|---|---|
+| `libgmp.a` + `gmp.h` | `CT_GMP=y` | ✓ (6.2.1) | Mach-O .a | HOST arm64 | GCC step 9/12 link（高精度算術，constexpr fold） |
+| `libmpfr.a` + `mpfr.h` | `CT_MPFR=y` | ✓ (4.1.0) | 同上 | 同上 | GCC link（浮點高精度） |
+| `libmpc.a` + `mpc.h` | `CT_MPC=y` | ✓ (1.2.1) | 同上 | 同上 | GCC link（complex） |
+| `libisl.a` + `isl/*.h` | `CT_ISL=y` | ✓ (0.24) | 同上 | 同上 | GCC link（polyhedral loop opt，graphite） |
+| `libcloog.a` | `CT_CLOOG=y` | ✗ | — | — | (已棄用，ISL 取代) |
+| `libelf.a` + `libelf.h` | `CT_LIBELF=y` | ✗ | — | — | LTO 讀 ELF section |
+| `libzlib.a` | `CT_ZLIB=y` (or system) | ⚠ system | — | — | 你用 system zlib（`CT_CC_GCC_SYSTEM_ZLIB=y`） |
+| `libiconv.a` | `CT_LIBICONV=y` | ✗ | — | — | macOS host build 才需要 |
+| `libgettext.a` | `CT_GETTEXT=y` | ✗ | — | — | i18n |
+| `libncurses.a` + `term.h` `curses.h` | `CT_NCURSES=y`（GDB-TUI 隱含 select） | ⚠ | Mach-O .a | HOST | step 16 cross-gdb link |
+| `libexpat.a` | `CT_EXPAT=y` | ✗ | — | — | gdb XML 處理 |
+
+#### Step 6 — binutils_for_host  ✓ 跑
+
+`do_binutils_backend` `--host=${CT_HOST}` `--target=${CT_TARGET}` `--prefix=${CT_PREFIX_DIR}`。
+
+`$PREFIX_DIR/bin/` 下，全部 prefix 為 `x86_64-centos6-linux-gnu-`：
+
+| Artifact | 格式 | Arch | 操作目標 |
+|---|---|---|---|
+| `x86_64-centos6-linux-gnu-as` | Mach-O ◆ | HOST arm64 | x86_64 ELF assemble |
+| `x86_64-centos6-linux-gnu-ld` `ld.bfd` | Mach-O ◆ | HOST | x86_64 ELF link（你 defconfig `CT_BINUTILS_FORCE_LD_BFD_DEFAULT=y`） |
+| `x86_64-centos6-linux-gnu-ld.gold` | ✗ | — | （`CT_BINUTILS_LINKER_LD=y` only，gold disabled） |
+| `x86_64-centos6-linux-gnu-ar` `ranlib` | Mach-O ◆ | HOST | x86_64 ELF archive |
+| `x86_64-centos6-linux-gnu-nm` | Mach-O ◆ | HOST | ELF symbol dump |
+| `x86_64-centos6-linux-gnu-objdump` | Mach-O ◆ | HOST | ELF disassemble + section dump |
+| `x86_64-centos6-linux-gnu-readelf` | Mach-O ◆ | HOST | ELF header / section / dynamic 解析 |
+| `x86_64-centos6-linux-gnu-objcopy` | Mach-O ◆ | HOST | ELF section 操作 |
+| `x86_64-centos6-linux-gnu-strip` | Mach-O ◆ | HOST | ELF strip symbols |
+| `x86_64-centos6-linux-gnu-size` | Mach-O ◆ | HOST | ELF section size 表 |
+| `x86_64-centos6-linux-gnu-strings` | Mach-O ◆ | HOST | ELF 字串掃描 |
+| `x86_64-centos6-linux-gnu-addr2line` | Mach-O ◆ | HOST | ELF 地址 → 行號 |
+| `x86_64-centos6-linux-gnu-c++filt` | Mach-O | HOST | C++ name demangle（文字處理，不操作 ELF） |
+| `x86_64-centos6-linux-gnu-elfedit` | Mach-O ◆ | HOST | ELF header 編輯 |
+| `x86_64-centos6-linux-gnu-gprof` | Mach-O ◆ | HOST | ELF profiling |
+| `x86_64-centos6-linux-gnu-windres` `dlltool` | ✗ | — | 只在 mingw target |
+| `$PREFIX/${TARGET}/bin/{as,ld,ar,nm,...}` | symlink → `bin/x86_64-...` | — | 不加 prefix 的 alias，給 gcc internal 呼叫用 |
+| `$PREFIX/${TARGET}/lib/ldscripts/elf_x86_64.x*` `elf_i386.x*` | text | — | linker scripts（指定 layout） |
+| `$PREFIX/lib/bfd-plugins/libdep.so` (Mac: `.dylib`) | Mach-O dylib | HOST | binutils plugin 支援 |
+| `$PREFIX/include/{bfd.h,dis-asm.h,...}` | text | — | binutils header（給 host 端開發者用） |
+| `$PREFIX/lib/libbfd.a` `libopcodes.a` `libctf.a` `libsframe.a` `libiberty.a` | Mach-O .a | HOST | binutils 內部 library（HOST 版） |
+
+#### Step 7 — libc_headers  ✗ glibc no-op
+
+#### Step 8 — kernel_headers  ✓ 跑
+
+Linux 2.6.32.71 `make headers_install` → text copy 到 `$SYSROOT/usr/include/`：
+
+| 路徑 | 內容 | 格式 |
+|---|---|---|
+| `usr/include/linux/*.h` | UAPI（types.h, fcntl.h, ioctl.h, mount.h, socket.h, bpf.h, btf.h, perf_event.h, …） | text |
+| `usr/include/asm/*.h` | x86_64-specific syscall / ptrace / unistd 號 | text |
+| `usr/include/asm-generic/*.h` | 通用 syscall ABI | text |
+| `usr/include/mtd/`, `rdma/`, `scsi/`, `video/`, `sound/`, `xen/`, `drm/` | sub-system UAPI | text |
+
+純 text，無 binary。
+
+#### Step 9 — cc_core (stage-1 GCC)  ✓ 跑
+
+裝在 `$CT_BUILDTOOLS_PREFIX_DIR/`（暫存，build 完丟），不入 final PREFIX_DIR。產物：
+
+| Artifact | 格式 | Arch | 用途 |
+|---|---|---|---|
+| `bin/${TARGET}-gcc` `cpp` `gcc-${VER}` | Mach-O ◆ | HOST arm64 | 殘缺 cross-gcc（`--without-headers --with-newlib --disable-shared --disable-libstdc++-v3`） |
+| `bin/${TARGET}-gcc-ar` `-nm` `-ranlib` | Mach-O ◆ | HOST | LTO wrapper |
+| `libexec/gcc/${TARGET}/${VER}/cc1` | Mach-O | HOST | C frontend (殘缺也建) |
+| `libexec/gcc/${TARGET}/${VER}/collect2` `lto-wrapper` `lto1` | Mach-O | HOST | linker helper |
+| `libexec/gcc/${TARGET}/${VER}/liblto_plugin.so` (Mac: `.dylib`) | Mach-O dylib | HOST | LTO plugin |
+| `lib/gcc/${TARGET}/${VER}/libgcc.a` | **Linux ELF x86_64 .a** | x86_64 + i686 | 殘缺 libgcc（給 step 10 glibc link） |
+| `lib/gcc/${TARGET}/${VER}/libgcc_eh.a` | Linux ELF x86_64 .a | x86_64 + i686 | exception handling |
+| `lib/gcc/${TARGET}/${VER}/crtbegin.o` `crtbeginS.o` `crtbeginT.o` `crtend.o` `crtendS.o` | Linux ELF .o | x86_64 + i686 | gcc-side C runtime startup |
+| `lib/gcc/${TARGET}/${VER}/include/`：`stddef.h` `stdarg.h` `varargs.h` `limits.h` `syslimits.h` `iso646.h` `stdbool.h` `stdint.h` `stdfix.h` `stdnoreturn.h` `tgmath.h` `float.h` 等 | text | — | gcc 內部 builtin header（語言固有，不依賴 libc） |
+| `lib/gcc/${TARGET}/${VER}/include-fixed/` | text | — | 被 fixinclude 修補過的 glibc headers（step 9 還沒 glibc，這個目錄為空） |
+| `share/gcc-${VER}/python/libstdcxx/` | ✗ | — | （殘缺 gcc 不建 libstdc++ 所以沒這個） |
+
+「雙身份」：step 9 binary 是 Mac Mach-O，但**附帶**的 libgcc.a / crtbegin.o 是 Linux ELF x86_64。
+
+#### Step 10 — libc_main (glibc 完整 build)  ✓ 跑（multilib x2）
+
+`CT_MULTILIB=y` → 同 source 跑 2 次，產 x86_64 + i686 兩套到 `$SYSROOT/lib64/` 跟 `$SYSROOT/lib/`。所有 binary 都是 **Linux ELF**。
+
+`$SYSROOT/`（=`$PREFIX/${TARGET}/sysroot/`）內容：
+
+| 路徑 | Artifact | 格式 | Arch |
+|---|---|---|---|
+| `lib64/libc-2.12.so` + symlink `libc.so.6` | shared libc main | ELF .so | x86_64 |
+| `lib/libc-2.12.so` + `libc.so.6` | 同上 | ELF .so | i686 (multilib) |
+| `lib64/libc.a` `usr/lib64/libc_nonshared.a` | static libc | ELF .a | x86_64 |
+| `lib/libc.a` `usr/lib/libc_nonshared.a` | 同上 | ELF .a | i686 |
+| `lib(64)/libm-2.12.so` `libm.so.6` `libm.a` | 數學庫 | ELF .so + .a | x86_64 + i686 |
+| `lib(64)/libpthread-2.12.so` `libpthread.so.0` `libpthread.a` | NPTL threads（`CT_THREADS="nptl"`） | ELF .so + .a | 同上 |
+| `lib(64)/librt-2.12.so` `librt.so.1` `librt.a` | realtime extensions | ELF | 同上 |
+| `lib(64)/libdl-2.12.so` `libdl.so.2` `libdl.a` | dlopen / dlsym | ELF | 同上 |
+| `lib(64)/libutil-2.12.so` `libutil.so.1` `libutil.a` | utility (`openpty`, `login` 等) | ELF | 同上 |
+| `lib(64)/libnsl-2.12.so` `libnsl.so.1` `libnsl.a` | NIS RPC (`CT_GLIBC_ENABLE_OBSOLETE_RPC=y`) | ELF | 同上 |
+| `lib(64)/libresolv-2.12.so` `libresolv.so.2` `libresolv.a` | DNS resolver | ELF | 同上 |
+| `lib(64)/libcrypt-2.12.so` `libcrypt.so.1` `libcrypt.a` | crypt() | ELF | 同上 |
+| `lib(64)/libanl-2.12.so` `libanl.so.1` `libanl.a` | 非同步 NSS (`getaddrinfo_a`) | ELF | 同上 |
+| `lib(64)/libBrokenLocale-2.12.so` `libBrokenLocale.so.1` `libBrokenLocale.a` | broken locale shim | ELF | 同上 |
+| `lib(64)/libcidn-2.12.so` `libcidn.so.1` | IDN | ELF | 同上 |
+| `lib(64)/libthread_db-1.0.so` `libthread_db.so.1` | thread debug (gdb 用) | ELF | 同上 |
+| `lib(64)/libmemusage.so` `libpcprofile.so` `libSegFault.so` | LD_PRELOAD profiling | ELF | 同上 |
+| `lib64/ld-2.12.so` + symlink `ld-linux-x86-64.so.2` | dynamic linker（kernel exec 時載入） | ELF | x86_64 |
+| `lib/ld-2.12.so` + `ld-linux.so.2` | 同上 | ELF | i686 |
+| `lib(64)/{crt1.o,crti.o,crtn.o,gcrt1.o,Mcrt1.o,Scrt1.o}` | C runtime startup objects（glibc 出貨；跟 step 9 的 crtbegin.o 不一樣） | ELF .o | x86_64 + i686 |
+| `usr/lib(64)/libnss_files.so.2` `libnss_dns.so.2` `libnss_compat.so.2` `libnss_hesiod.so.2` `libnss_nis.so.2` `libnss_nisplus.so.2` | NSS plugins (DNS, files, NIS) | ELF .so | 同上 |
+| `usr/lib(64)/libBrokenLocale.a` `libresolv.a` `libutil.a` `libnsl.a` `libcrypt.a` `libanl.a` `libpthread.a` `libdl.a` `librt.a` `libm.a` | static 版本（usr/lib 內也有 archive 鏡像） | ELF .a | 同上 |
+| `usr/include/`：`stdio.h stdlib.h string.h time.h unistd.h fcntl.h errno.h math.h pthread.h dlfcn.h signal.h locale.h setjmp.h ctype.h assert.h stdarg.h stdint.h stddef.h limits.h wchar.h wctype.h inttypes.h getopt.h netdb.h syslog.h sys/*.h bits/*.h gnu/*.h arpa/*.h net/*.h netinet/*.h nss.h rpc/*.h sched.h spawn.h utmp.h utmpx.h …`（約 300 個 header） | text | — |
+| `usr/include/linux/`, `asm/`, `asm-generic/` 等 | （從 step 8 來，glibc install 時保留） | text | — |
+| `usr/include/gnu/lib-names.h lib-names-64.h stubs.h stubs-64.h` | glibc 內部 lib 對應表 | text | — |
+| `etc/ld.so.conf` `etc/rpc` | runtime 設定 | text | — |
+| `usr/share/locale/` 內 locale 資料（CT_GLIBC_LOCALES=y 才有） | binary locale data | endian-specific | endian = target |
+| `usr/share/zoneinfo/` | tz 資料 | binary | — |
+
+#### Step 11 — cc_for_build  ✗ cross type skip
+
+#### Step 12 — cc_for_host (★ 最終 cross-gcc + libstdc++)  ✓ 跑
+
+`do_cc_for_host` → `do_gcc_backend` 完整路徑，裝 `$PREFIX_DIR/`。
+
+| 路徑 | Artifact | 格式 | Arch |
+|---|---|---|---|
+| `bin/${TARGET}-gcc` `${TARGET}-gcc-${VER}` | C driver | Mach-O ◆ | HOST arm64 |
+| `bin/${TARGET}-g++` `${TARGET}-c++` `c++` 別名 | C++ driver | Mach-O ◆ | HOST |
+| `bin/${TARGET}-cpp` | preprocessor 獨立 | Mach-O ◆ | HOST |
+| `bin/${TARGET}-gcc-ar` `-nm` `-ranlib` | LTO 用 binutils wrapper | Mach-O ◆ | HOST |
+| `bin/${TARGET}-gcov` `-gcov-tool` `-gcov-dump` | coverage 工具 | Mach-O | HOST |
+| `bin/${TARGET}-lto-dump` | LTO bytecode dump | Mach-O | HOST |
+| `bin/${TARGET}-populate` | shell script（step 18 產） | text | — |
+| `libexec/gcc/${TARGET}/${VER}/cc1` | C frontend (parsing + AST + IR) | Mach-O | HOST |
+| `libexec/gcc/${TARGET}/${VER}/cc1plus` | C++ frontend | Mach-O | HOST |
+| `libexec/gcc/${TARGET}/${VER}/collect2` | linker driver wrapper | Mach-O | HOST |
+| `libexec/gcc/${TARGET}/${VER}/lto-wrapper` `lto1` | LTO link helper | Mach-O | HOST |
+| `libexec/gcc/${TARGET}/${VER}/liblto_plugin.so` | LTO plugin (給 binutils 看的) | Mach-O dylib | HOST |
+| `libexec/gcc/${TARGET}/${VER}/plugin/gengtype` | gcc plugin gen | Mach-O | HOST |
+| `libexec/gcc/${TARGET}/${VER}/install-tools/{fixinc.sh,fixincl,mkheaders,mkinstalldirs}` | header fixup runtime | text + Mach-O | HOST |
+| `lib/gcc/${TARGET}/${VER}/libgcc.a` | full libgcc（unwind + arith intrinsics） | **ELF .a** | x86_64 + i686 |
+| `lib/gcc/${TARGET}/${VER}/libgcc_s.so.1` + symlink `.so` | shared libgcc | **ELF .so** | 同上 |
+| `lib/gcc/${TARGET}/${VER}/libgcc_eh.a` | exception handling static | ELF .a | 同上 |
+| `lib/gcc/${TARGET}/${VER}/libgcov.a` | coverage runtime | ELF .a | 同上 |
+| `lib/gcc/${TARGET}/${VER}/{crtbegin.o,crtbeginS.o,crtbeginT.o,crtend.o,crtendS.o,crtfastmath.o,crtprec32.o,crtprec64.o,crtprec80.o}` | gcc-side crt（補 glibc 的 crt1.o） | ELF .o | 同上 |
+| `lib/gcc/${TARGET}/${VER}/include/` `<stddef.h> <stdarg.h> <stdint.h> <stdbool.h> <iso646.h> <limits.h> <syslimits.h> <stdnoreturn.h> <stdalign.h> <stdatomic.h> <tgmath.h> <stdfix.h> <float.h> <iso646.h> <mmintrin.h> <xmmintrin.h> <emmintrin.h> <pmmintrin.h> <tmmintrin.h> <smmintrin.h> <nmmintrin.h> <wmmintrin.h> <ammintrin.h> <bmiintrin.h> <bmi2intrin.h> <avxintrin.h> <avx2intrin.h> <avx512fintrin.h> <fmaintrin.h> ...（百來個 intrinsic header） | text | — |
+| `lib/gcc/${TARGET}/${VER}/include-fixed/` 經 fixincludes 修補的 glibc headers | text | — |
+| `lib/gcc/${TARGET}/${VER}/plugin/include/` | gcc plugin API headers | text | — |
+| `${TARGET}/include/c++/${VER}/` libstdc++ headers：`<iostream> <ostream> <istream> <fstream> <sstream> <iomanip> <streambuf> <string> <string_view> <vector> <array> <deque> <list> <forward_list> <map> <set> <unordered_map> <unordered_set> <stack> <queue> <bitset> <algorithm> <numeric> <iterator> <functional> <memory> <utility> <tuple> <variant> <optional> <any> <chrono> <thread> <mutex> <condition_variable> <atomic> <future> <shared_mutex> <ratio> <type_traits> <typeinfo> <new> <exception> <stdexcept> <system_error> <regex> <random> <complex> <valarray> <limits> <climits> <cstdint> <cstddef> <cstdio> <cstdlib> <cstring> <cwchar> <cwctype> <ctime> <cmath> <cassert> <cerrno> <cctype> <cfloat> <ciso646> <clocale> <csetjmp> <csignal> <cstdarg> <cuchar> <execution> <filesystem> <span> <ranges> <concepts> <coroutine> <bit> <numbers> <compare> <source_location> <syncstream> <stop_token> <semaphore> <latch> <barrier> <format> <expected> <print> <generator> <flat_map> <flat_set> <mdspan> <stacktrace> <stdfloat>` ...（GCC 15 全套 C++23/26 headers） | text | — |
+| `${TARGET}/include/c++/${VER}/${TARGET}/bits/` machine-specific bits（atomic word size, endian, dt-related） | text | — |
+| `${TARGET}/include/c++/${VER}/ext/` 「GNU extensions」（hash_map 等） | text | — |
+| `${TARGET}/include/c++/${VER}/debug/` 「debug containers」 | text | — |
+| `${TARGET}/include/c++/${VER}/tr1/` `tr2/` legacy TR1 / TR2 | text | — |
+| `${TARGET}/include/c++/${VER}/parallel/` parallel mode (`-D_GLIBCXX_PARALLEL`) | text | — |
+| `${TARGET}/lib(64)/libstdc++.so.6` + `libstdc++.so.6.0.${vmajor}` `libstdc++.a` | C++ stdlib | **ELF .so / .a** | x86_64 + i686 |
+| `${TARGET}/lib(64)/libstdc++.so.6.0.${vmajor}-gdb.py` | gdb pretty-printer Python | text | — |
+| `${TARGET}/lib(64)/libstdc++fs.a` | std::filesystem | ELF .a | 同上 |
+| `${TARGET}/lib(64)/libstdc++exp.a` | TS experimental | ELF .a | 同上 |
+| `${TARGET}/lib(64)/libsupc++.a` | C++ ABI 支援（RTTI、cxa_throw、type_info） | ELF .a | 同上 |
+| `${TARGET}/lib(64)/libgomp.so.1` `libgomp.a` `libgomp.spec` | OpenMP runtime（`CT_CC_GCC_LIBGOMP=y`） | ELF + text | 同上 |
+| `${TARGET}/lib(64)/libquadmath.so.0` `libquadmath.a` | __float128 quad-precision（`CT_CC_GCC_LIBQUADMATH=y`） | ELF | 同上 |
+| `${TARGET}/lib(64)/libatomic.so.1` `libatomic.a` | C11 `<stdatomic.h>` / C++11 `<atomic>` lock-free fallback | ELF | 同上 |
+| `${TARGET}/lib(64)/libssp.so.0` `libssp.a` `libssp_nonshared.a` | ✗ 你 defconfig `CT_CC_GCC_LIBSSP=n`（glibc 自帶 SSP，gcc 自己的 libssp 就不需要） |
+| `${TARGET}/lib(64)/libitm.so.1` `libitm.a` | ✗ `CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"` 加上你之後 `--disable-libitm`（Intel TM，glibc 2.12 編不過） |
+| `${TARGET}/lib(64)/libasan.so libtsan.so libubsan.so liblsan.so libhwasan.so` | ✗ `CT_CC_GCC_LIBSANITIZER=n` |
+| `${TARGET}/lib(64)/libmpx.so libmpxwrappers.so` | ✗ `CT_CC_GCC_LIBMPX=n`（Intel MPX in GCC 9+ 已棄） |
+| `${TARGET}/lib(64)/{Scrt1.o crt1.o crti.o crtn.o}` | 從 glibc step 10 帶過來 alias | symlink → SYSROOT | — |
+| `${TARGET}/bin/{as,ld,ar,nm,objcopy,objdump,readelf,strip,ranlib,...}` | symlink → `bin/${TARGET}-*` | — | — |
+| `${TARGET}/lib/ldscripts/elf_x86_64.x*` `elf_i386.x*` | linker scripts | text | — |
+| `share/gcc-${VER}/python/libstdcxx/v6/` `gdb-pretty-printers/` | python pretty-printer modules | text | — |
+| `share/gcc-${VER}/plugin/include/` `plugin/` | plugin API headers + sample | text | — |
+
+#### Step 13 — libc_post_cc  ✗ glibc no-op
+
+#### Step 14 — companion_libs_for_target  ✗ 你 defconfig 不跑
+
+| 可能 artifact | gated flag | 你 defconfig | 格式 | Arch |
+|---|---|---|---|---|
+| `sysroot/usr/lib(64)/libgmp.so.10 libgmp.a` | `CT_GMP_TARGET=y` | ✗ | (若開) ELF .so + .a | x86_64 + i686 |
+| `sysroot/usr/lib(64)/libmpfr.so.6 libmpfr.a` | `CT_MPFR_TARGET=y` | ✗ | 同上 | 同上 |
+| `sysroot/usr/lib(64)/libmpc.so.3 libmpc.a` | `CT_MPC_TARGET=y` | ✗ | 同上 | 同上 |
+| `sysroot/usr/lib(64)/libisl.so.23 libisl.a` | `CT_ISL_TARGET=y` | ✗ | 同上 | 同上 |
+| `sysroot/usr/lib(64)/libelf.so.1 libelf.a` | `CT_LIBELF_TARGET=y` | ✗ | 同上 | 同上 |
+| `sysroot/usr/lib(64)/libexpat.so.1 libexpat.a` | `CT_EXPAT_TARGET=y` | ✗ | 同上 | 同上 |
+| `sysroot/usr/include/{gmp.h, mpfr.h, mpc.h, isl/*.h, libelf.h, expat.h}` | 各自 flag | ✗ | text | — |
+
+→ 用途：讓 target 機器（CentOS 6）user binary 可以 link gmp/mpfr 等。一般 CentOS 6 自己有套件管理，所以這 step 鮮少開。
+
+#### Step 15 — binutils_for_target  ✗ 你 defconfig 不跑
+
+`binutils.sh:306-363`：**只產 `libiberty.a` + `libbfd.a`**，不產 `as`/`ld` 那些 binary（你抓到的點！）。
+
+| 可能 artifact | gated flag | 你 defconfig | 格式 | Arch | 用途 |
+|---|---|---|---|---|---|
+| `sysroot/usr/lib(64)/libiberty.a` | `CT_BINUTILS_FOR_TARGET_IBERTY=y` | ✗ | ELF .a | x86_64 + i686 | binutils 內部通用 helpers（`xmalloc`, `splay-tree`, demangler 等），給 target user binary 用 |
+| `sysroot/usr/lib(64)/libbfd.a` | `CT_BINUTILS_FOR_TARGET_BFD=y` | ✗ | ELF .a | 同上 | BFD object-file library（gdb 從這個讀 ELF 結構） |
+| `sysroot/usr/include/{bfd.h, dis-asm.h, symcat.h, libiberty.h, demangle.h}` | 同上 | ✗ | text | — | bfd / libiberty API headers |
+
+**重要**：`binutils_for_target` 從不產 target-native `as`/`ld`！這是 ct-ng 命名最誤導的地方。要 target 機器上有自己的 native binutils，user 要在 target 用 distro 套件管裡裝（`yum install binutils`）。ct-ng 這個 step 只是給「target 上要 link bfd / libiberty 的 user binary」備料。
+
+#### Step 16 — debug (cross-gdb)  ✓ 跑
+
+`CT_DEBUG_GDB=y` `CT_GDB_V_16=y` `CT_GDB_VERSION="16.3"` `CT_GDB_CROSS=y` `CT_GDB_CROSS_PYTHON=y`：
+
+| Artifact | 格式 | Arch | 用途 |
+|---|---|---|---|
+| `bin/${TARGET}-gdb` | Mach-O ◆ | HOST arm64 | cross-gdb（Mac 跑，debug x86_64 ELF target binary 或 core dump） |
+| `bin/${TARGET}-gdb-add-index` | Mach-O | HOST | DWARF index 預產（加速 gdb 啟動） |
+| `bin/${TARGET}-run` (`--enable-gdb-sim`) | ✗ | — | simulator wrapper 一般不開 |
+| `share/gdb/python/gdb/` 內 `command/`, `printer/`, `function/` 等 Python module | text | — | Python integration |
+| `share/gdb/syscalls/*.xml` | text | — | per-arch syscall 名表（catch syscall） |
+| `share/gdb/system-gdbinit/` | text | — | 系統 gdbinit |
+| `${TARGET}/debug-root/usr/bin/gdbserver` | ✗ | — | 你 defconfig 沒設 `CT_GDB_GDBSERVER` |
+
+cross-gdb 是 Mach-O 跑在 Mac 上，但讀 / 解析的 binary 是 x86_64 ELF——同樣的 ◆ bridge pattern。
+
+#### Step 17 — test_suite  ✗ 預設 skip
+
+`CT_TEST_SUITE` 預設 n。
+
+#### Step 18 — finish  ✓ 跑
+
+`internals.sh:28+ do_finish()`：
+
+| 動作 | 產物 / 副作用 |
+|---|---|
+| 產 `bin/${TARGET}-populate` | shell script (text)，user 用來把 target binary deploy 到 sysroot |
+| 產 `bin/${TARGET}-ldd` | ✗ 你 defconfig 沒設 `CT_LIBC_XLDD` |
+| 產 unprefixed alias `bin/${TARGET_ALIAS}-*` | symlinks → `bin/${TARGET}-*`（讓 user 可以打更短的 prefix） |
+| strip 所有 host binary | `bin/${TARGET}-*` + `libexec/gcc/.../*` + `${TARGET}/bin/*` 全用 `${HOST}-strip` 砍 debug section（你 `CT_STRIP_HOST_TOOLCHAIN_EXECUTABLES=y`） |
+| install licenses | `share/licenses/` 全套 GPL / LGPL / Apache / BSD 等 text 檔（你 `CT_INSTALL_LICENSES=y`） |
+| 收 build log | `${PREFIX_DIR}/build.log.bz2`（你 `CT_LOG_TO_FILE=y CT_LOG_FILE_COMPRESS=y`） |
+| 刪 docs | 刪 `share/man/` `share/info/`（你 `CT_REMOVE_DOCS=y`） |
+| `chmod -R a-w ${CT_PREFIX_DIR}` | ✗ 你沒設 `CT_PREFIX_DIR_RO`，所以 prefix 保持 writable |
+
+### 總結：你 defconfig 實際會跑的 step
+
+對 `x86_64-centos6-glibc212-gcc15.defconfig`（glibc + cross type + Mac/Linux container HOST）：
+
+✓ 實際跑：**step 2（僅 ncurses, 視 GDB-TUI）、5、6、8、9、10（multilib x2）、12、16、18** = **8 個（+1 partial）有產物的 step**
+
+✗ 沒跑：1（沒設 CT_COMP_TOOLS_*）、3（cross skip）、4（cross skip）、7（glibc no-op）、11（cross skip）、13（glibc no-op）、14（沒設 CT_*_TARGET）、15（沒設 CT_BINUTILS_FOR_TARGET_*）、17（test_suite default skip）= **9 個 framework hook 留著但沒實際工作**
+
+「跑滿 18 step」是 framework 給其他 libc / toolchain type 留的彈性。typical Mac→Linux cross glibc 配置實際只有 ~1/2 step 有產物。
 
 ### 為什麼順序非變不可
 
-每 step 依賴前一個：
-- step 7 (stage-1 gcc) 依賴 step 6 cross-binutils 跟 step 5 companion libs
-- step 9 (glibc headers + crt) 依賴 step 7 stage-1 gcc + step 8 kernel headers
-- step 10 (stage-1.5 gcc) 依賴 step 9 glibc headers
-- step 11 (full glibc) 依賴 step 10 stage-1.5 gcc + step 9 crt files
-- step 12 (final gcc with libstdc++) 依賴 step 11 full glibc
+實際會跑的 step 之間的依賴（canonical 1.25 順序）：
 
-**glibc 為什麼分兩刀**：完整 glibc 的 `make all` 在 configure 階段要 link test program → 要 startup objects (crt) + libgcc → 但這些之前還沒。所以 step 9 先 build 出 glibc headers + crt object（不需要 libc.a 也能 build，因為它們本身就是 libc 的一部分）；step 10 用這些補完整版 libgcc；step 11 終於能 build full libc。
+- step 6 binutils_for_host 是 step 9 cc_core 的工具前提（cross-as / cross-ld）
+- step 9 cc_core 依賴 step 6 cross-binutils（用 cross-as 組譯 .S；不需要 libc）
+- step 10 libc_main 依賴 step 9 cc_core（編譯 glibc 本體）+ step 8 kernel headers
+- step 12 cc_for_host 依賴 step 10 libc.so/.a/crt（link libstdc++）
+- step 14 companion_libs_for_target & step 15 binutils_for_target 依賴 step 12 final gcc + step 10 libc
 
-**GCC 為什麼三刀**：
-- step 7 (cc_core) — 殘缺：`--without-headers --with-newlib --disable-shared --disable-libstdc++-v3`
-- step 10 (cc_for_build) — 升級：拿掉 `--without-headers`，能 build libgcc
-- step 12 (cc_for_host) — 完整：加 `--enable-languages=c,c++ --enable-shared --enable-libstdc++` 這時 sysroot 有 libc，libstdc++ 能 build
+**glibc 真實 build 模式 — 1 刀，不是 2 刀**
 
-`ct-ng list-steps` 可以列出來：
+ct-ng framework 預留 `libc_headers` / `libc_main` / `libc_post_cc` 三個 hook（step 7 / 10 / 13）。但對 glibc 來說 `headers` 跟 `post_cc` 是 no-op——整個 glibc 在 step 10 跑完。glibc-2.12 的 build system 自己處理「先 install headers + crt 再 link full libc」的內部相依，ct-ng 不需要拆 step。
+
+兩刀模式（`headers` 先 install、`main` 再 install full libc，可能還加 `post_cc` 補充）只在這幾個 libc 出現：uClibc-ng (`main` + `post_cc`)、musl (`main` + `post_cc`)、newlib (`headers` + `main`)。
+
+**GCC 真實 build 模式 — cross type 是 2 階段（cc_core → cc_for_host），不是 3 階段**
+
+ct-ng framework 預留 `cc_core` / `cc_for_build` / `cc_for_host` 三個 hook（step 9 / 11 / 12）。但 `do_cc_for_build()` 開頭：
+
+```
+case "${CT_TOOLCHAIN_TYPE}" in
+    native|cross)   return 0;;
+esac
+```
+
+→ cross type 直接 skip stage-1.5。對你 Mac→Linux 的 build，實際只有兩刀：
+
+- step 9 cc_core — 殘缺 cross-gcc：`--without-headers --with-newlib --disable-shared --disable-libstdc++-v3`（用來編 step 10 glibc）
+- step 12 cc_for_host — 完整 cross-gcc + libstdc++：拿到 step 10 ELF libc 之後加 `--enable-languages=c,c++ --enable-shared --enable-libstdc++`
+
+三階段 GCC 只在 canadian 或 cross-native 跑滿，那時 stage-1.5 用來在 BUILD 機器上產一支「能在 BUILD 上跑、但已經有 libgcc」的中間 gcc。
+
+`ct-ng list-steps` 印出 framework 所有 hook（不論該 libc/toolchain type 會不會實際執行）：
+
 ```bash
 $ ct-ng list-steps
 INFO :: Available build steps, in order:
@@ -270,19 +603,21 @@ INFO :: Available build steps, in order:
   - companion_tools_for_host
   - companion_libs_for_host
   - binutils_for_host
-  - cc_core              ← stage-1 GCC
+  - libc_headers          ← glibc no-op
   - kernel_headers
-  - libc_start_files     ← glibc 第一刀
-  - cc_for_build         ← stage-1.5 GCC
-  - libc                 ← glibc 第二刀
-  - cc_for_host          ← stage-2 GCC（最終）
+  - cc_core               ← stage-1 GCC
+  - libc_main             ← glibc 唯一一刀
+  - cc_for_build          ← cross type skip
+  - cc_for_host           ← ★ stage-2 final GCC ★
+  - libc_post_cc          ← glibc no-op
   - companion_libs_for_target
   - binutils_for_target
   - debug
   - test_suite
+  - finish
 ```
 
-順序 hard-coded。fail 在哪 step 可以 `ct-ng <step>` resume，前面的不會重做（除非 source 改）。
+順序 hard-coded（見 `ct-ng.in:271–290` 的 `CT_STEPS :=`）。fail 在哪 step 可以 `ct-ng <step>` resume，前面的不會重做（除非 source 改）。1.28 在 binutils_for_host 跟 libc_headers 之間多塞一個 `linker` step（19 step），把 ld 從 binutils 拆出來；本專案用的 1.25 沒有。
 
 ---
 
@@ -377,7 +712,9 @@ hdiutil attach /path/to/ct-build.sparseimage
 
 `build-1.25.sh` 自動偵測 + 建 sparseimage。**WORK_DIR 跟 PREFIX_DIR 兩個都**要 case-sensitive — ct-ng 兩個都檢查。
 
-我們用 **HFS+** 不用 APFS（messense CI[^11] 也選 HFS+），因為 APFS 的 metadata semantics 跟 ncurses parallel build 不對盤、會 race。
+我們用 **Case-sensitive Journaled HFS+** 不用 case-sensitive APFS。理由是 `hdiutil` 建 HFS+ sparseimage 是 ct-ng 社群 + messense CI[^11] 都驗過的穩定路徑；不是 APFS 本身有問題。
+
+> **修正**：早期我們以為 APFS metadata semantics 會跟 ncurses parallel build race，那是誤判。後來 Finding #B 的 bisect 證實 ncurses fail 真因是 `LANG`/`LC_ALL` unset 導致 gawk locale code path silently fail（跟 FS 類型完全無關，`CT_PARALLEL_JOBS=1` 強迫 sequential 也沒解掉 → 否決 race hypothesis）。HFS+ 至此純粹是 convention，不是技術必要。
 
 ---
 
@@ -506,14 +843,15 @@ hdiutil attach /path/to/ct-build.sparseimage
 ```
 然後把 ct-ng 的 work dir 跟 install prefix 都導向這個 mount point。**兩個都要 case-sensitive**，ct-ng 兩處都檢查。
 
-後續經驗：APFS 在後面踩到 ncurses parallel race（見 Finding #B），改用 **`Case-sensitive Journaled HFS+`**（messense CI 也用 HFS+）。
+後來統一用 **`Case-sensitive Journaled HFS+`**，跟 messense CI[^11] 對齊。
+
+> **修正**：我們一度懷疑「APFS 在後面踩到 ncurses parallel race」就是 Finding #B，但那個假設被自己的 bisect 否決——`CT_PARALLEL_JOBS=1` 沒解掉問題，真因是 `LANG`/`LC_ALL` unset 導致 gawk locale code path 失敗（跟 FS 完全無關）。Case-sensitive APFS 在 ct-ng build 內未驗證實際失敗過；現在選 HFS+ 是 convention 不是必要。
 
 **Reference**：
-- ct-ng source `scripts/functions` 的 `CT_TestAndAbort` 跟 `CT_DoArchSetSysrootDir`：<https://github.com/crosstool-ng/crosstool-ng/blob/master/scripts/functions>
-- Apple File System Reference (case-sensitivity per-volume)：<https://developer.apple.com/documentation/foundation/file_system/about_apple_file_system>
-- `man 1 hdiutil`：<https://ss64.com/mac/hdiutil.html>
-
-**承接到 1.25 era**：解這個 finding 留下 build script 的 sparseimage 自動建立邏輯。1.25 build 沿用同邏輯。我們現在用 HFS+ 不是 APFS（從 Finding #B 學到）。
+- [ct-ng source `scripts/functions` 的 `CT_TestAndAbort` 跟 `CT_DoArchSetSysrootDir`](https://github.com/crosstool-ng/crosstool-ng/blob/master/scripts/functions)
+- [Apple File System Reference (case-sensitivity per-volume)](https://developer.apple.com/documentation/foundation/file_system/about_apple_file_system)
+- [`man 1 hdiutil`](https://ss64.com/mac/hdiutil.html)
+**承接到 1.25 era**：解這個 finding 留下 build script 的 sparseimage 自動建立邏輯。1.25 build 沿用同邏輯，用 **`Case-sensitive Journaled HFS+`**（跟 messense CI 對齊；非技術必要，是 convention）。
 
 ---
 
@@ -573,10 +911,83 @@ $as_unset LANG || test "${LANG+set}" != set || { LANG=C; export LANG; }
 (a) 預先 sed 改 ncurses configure 的 `$as_unset LANG` 改成 `LANG=C; export LANG`
 (b) configure 呼叫加上 `LANG=C LC_ALL=C`，雙保險
 
+#### LANG / LC_ALL 是什麼
+
+POSIX locale 的主要 environment variable，控制程式如何**詮釋文字**：
+
+| 影響面 | 例子 |
+|---|---|
+| 字元編碼 | `en_US.UTF-8` / `zh_TW.UTF-8` / `C`（純 ASCII） |
+| 排序順序（collation） | `LANG=de_DE` 把 `ä` 排在 `a` 後面；`LANG=C` 純 byte 比較 |
+| 訊息語言 | `LANG=zh_TW` 讓 `ls --help` 印中文 |
+| 數字 / 日期格式 | `LANG=en_US` 千分號用 `,`；`LANG=fr_FR` 用空格 |
+
+常見值：
+- `en_US.UTF-8` — 美式英文 UTF-8
+- `C` 或 `POSIX` — 「最小 locale」，ASCII-only，byte 比較
+- **unset**（變數根本不存在）— 各 libc / 工具行為不一致，**這次踩到的雷**
+
+`LC_ALL` 是 master 旗，設了就覆蓋 `LANG`。所以兩個都要改，防一手。
+
+**為什麼這次出事**：macOS 上 brew gawk 5.4 在 `LANG` unset（不是空字串，是完全不存在）的情況下，內部某個 locale-aware code path 默默失敗，產空輸出，**不報錯**。Linux glibc 對 unset 自動 fallback 成 "C"，所以同一段 awk 在 Linux 上不會炸。
+
+#### Patch 逐行解釋
+
+**Part A — sed 改 ncurses configure source**：
+
+```bash
+/opt/homebrew/opt/gnu-sed/bin/gsed -i \
+    -e 's|^\$as_unset LANG .*|LANG=C; export LANG|' \
+    -e 's|^\$as_unset LC_ALL .*|LC_ALL=C; export LC_ALL|' \
+    "${CT_SRC_DIR}/ncurses/configure"
+```
+
+| 片段 | 意思 |
+|---|---|
+| `/opt/homebrew/opt/gnu-sed/bin/gsed` | brew 裝的 GNU sed 絕對路徑。BSD sed（macOS 內建 `/usr/bin/sed`）的 `-i` 必須加備份後綴（`-i ''`），跟 GNU sed `-i` 直接 in-place 不相容，寫絕對路徑確保撈到 GNU 那支 |
+| `-i` | edit in place（直接改檔，不寫 stdout） |
+| `-e 'EXPR'` | sed 表達式，多個 `-e` 串接 |
+| `s\|FROM\|TO\|` | substitute。用 `\|` 當分隔符是因為被處理的文字內有 `/`（autoconf script），避免要逃跳 |
+| `^\$as_unset LANG .*` | 比對開頭是字面字串 `$as_unset LANG` 的行。`^` 行首；`\$` 逃跳的 `$`（sed 內 `$` 是「行尾」metachar，必須 `\$` 才是字面美元符號）；`.*` 抓後面所有 |
+| `LANG=C; export LANG` | 替換成：設 LANG 為 "C"，再 export 給 subprocess |
+| `"${CT_SRC_DIR}/ncurses/configure"` | 被改的檔——ncurses 的 autoconf 產出 `configure` |
+
+**改了什麼**：ncurses `configure` 第 70 行原本是 autoconf 標準保險寫法：
+
+```sh
+$as_unset LANG || test "${LANG+set}" != set || { LANG=C; export LANG; }
+```
+
+讀作「先試 `unset LANG`；若失敗（老 shell 不支援 unset）且 LANG 還在，硬設 `LANG=C`」。**bug**：`unset LANG` 在現代 shell 都成功（return 0）→ `||` short-circuit → 永遠走不到後面 fallback → LANG 結果是 unset → gawk 5.4 在 macOS 撞牆。
+
+sed 把整行換成 `LANG=C; export LANG`——直接設 C，不走 autoconf 那串會 short-circuit 的邏輯。`LC_ALL` 同樣處理。
+
+**Part B — 呼叫 configure 時再從 env 灌一層**：
+
+```bash
+CT_DoExecLog CFG                                                    \
+CFLAGS="${cflags}"                                                  \
+LDFLAGS="${ldflags}"                                                \
+LANG=C LC_ALL=C                                                     \
+${CONFIG_SHELL}                                                     \
+"${CT_SRC_DIR}/ncurses/configure"                                   \
+```
+
+shell 語法：`A=1 B=2 command args` = 把 `A=1 B=2` 設成這次呼叫的 env、跑完 command 後消失（不污染 parent shell）。所以 `LANG=C LC_ALL=C ${CONFIG_SHELL} ".../configure"` = **進 configure 那一刻就有正確 locale 值**，從 shell 層灌進去。
+
+**為什麼兩層都要（防禦深度）**：
+
+| 層 | 作用 | 萬一失靈 |
+|---|---|---|
+| A. sed 改 source | configure script 內部不會再 unset LANG | sed 沒命中（ncurses 換版本、autoconf 行格式變）→ B 補回去 |
+| B. 呼叫時 `LANG=C LC_ALL=C` | 進 configure 時就有正確值 | configure 內部 line 70 真的 unset 掉 → A 補回去 |
+
+只做 A 不夠（sed 規則 fragile），只做 B 不夠（configure 內部會 unset 掉），兩層綁一起才穩。
+
 **Reference**：
-- autoconf locale-normalization 樣板：<https://git.savannah.gnu.org/gitweb/?p=autoconf.git;a=blob;f=lib/autoconf/general.m4>
-- gawk 5.4 source（`Locale support`）：<https://git.savannah.gnu.org/gitweb/?p=gawk.git;a=blob;f=re.c>
-- ct-ng issue #1788 (binutils PATH ordering)：<https://github.com/crosstool-ng/crosstool-ng/issues/1788>
+- [autoconf locale-normalization 樣板](https://git.savannah.gnu.org/gitweb/?p=autoconf.git;a=blob;f=lib/autoconf/general.m4)
+- [gawk 5.4 source（`Locale support`）](https://git.savannah.gnu.org/gitweb/?p=gawk.git;a=blob;f=re.c)
+- [ct-ng issue #1788 (binutils PATH ordering)](https://github.com/crosstool-ng/crosstool-ng/issues/1788)
 - 我們的修法檔在 `tmp/ct-ng-1.25/share/crosstool-ng/scripts/build/companion_libs/220-ncurses.sh`
 
 **承接到 1.25 era**：1.25 build 也沿用同樣 patch（已 apply 到 ct-ng-1.25 安裝樹）。沒這 patch 1.25 ncurses 一樣會炸。
@@ -597,25 +1008,86 @@ configure:1184: $? = 139
 - File：autoconf 生成的 `configure` 內 `( PATH=".;."; conftest.sh ) 2>&5` 這類 subshell pattern
 - subshell 的 child process fork 之後沒立刻 exec()，使用 CoreFoundation framework function 觸發 macOS 26 安全 abort
 
-**根因**：
+#### Double-confirm（web research 2026-05）
+
+**(1) Error 訊息的來源 — ✓ 確認**
+
+字串跟對應的 break symbol `__THE_PROCESS_HAS_FORKED_AND_YOU_CANNOT_USE_THIS_COREFOUNDATION_FUNCTIONALITY___YOU_MUST_EXEC__()` 在 Apple 開源的 `CF/CFRuntime.c`。Apple 用 `pthread_atfork()` 從 `__CFInitialize()` 註冊 child handler，child 進到 CF 任何函式時兩個 `write(2)` call 印 `EXEC_WARNING_STRING_1` / `EXEC_WARNING_STRING_2`。
+
+> ⚠ Apple 在 2015 (CF-1153.18, Yosemite) 之後**停止 open-source CoreFoundation**。最後可看到的 source 那版裡 `HALT` 被 comment out → 歷史上是 warn-only。Post-2015 行為變化無法從 primary source 審。
+>
+> Source: <https://github.com/apple-oss-distributions/CF/blob/main/CFRuntime.c>
+
+**(2) macOS 26 真的開始 abort 嗎？— ⚠ partial（多重 downstream 證據，無 Apple release note）**
+
+無 Apple release notes 紀錄。下游 issue 多份指認 macOS 26 abort 行為：
+- Celery #9894（macOS 26.0，EXC_BAD_ACCESS / SIGSEGV "crashed on child side of fork pre-exec"）
+- herd-community #1656（macOS 26.3，PHP-FPM 從 `gettext()` → `libintl_dcigettext` → `CFPreferencesCopyAppValueWithContainerAndConfiguration` 全棧）
+- hashcat #4511（"insta segfault on macos Tahoe"）
+
+時間線分兩階段：
+- **ObjC `+initialize` 路徑**：PHP-src #11818（2023-07-29 filed）指證 **macOS 13.5 Ventura** 開始 `SIGABRT`-crash（之前是 warn）
+- **CFPreferences / CFBundle / CFPlugIn 在 multi-threaded child 的 SIGSEGV**：廣泛 report 從 **macOS 26 Tahoe** 才開始
+
+→ 我們的場景（bash subshell 進 `libintl_dcigettext` → `CFPreferencesCopyAppValue`）落在第二類，所以 macOS 14/15 沒爆、26 才爆 fits 證據。但「macOS 26 把 warn 升級成 abort」**這歸因目前是 inference，沒 Apple 官方文獻**。
+
+**(3) `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` 涵蓋範圍 — ✓ 確認**
+
+只 cover Objective-C runtime `+initialize` method check，**不 cover CoreFoundation**。多個獨立 report（wefearchange、Apple Developer Forums、Rails/Spring/Django issues）一致：設了還是會 CF crash。Apple 沒給對應的 `CF_DISABLE_*` flag。
+> Source: <https://www.wefearchange.org/2018/11/forkmacos.rst>
+
+**(4) 有任何方法 disable CF fork abort 嗎？— ❌ 沒有**
+
+Apple Developer Forums thread 747499（Quinn "The Eskimo!" 官方回覆）：唯一支援的 remedy 是 fork 後立刻 `exec*()`，或改用 `posix_spawn` / Python `multiprocessing` 的 `spawn` mode。**沒有任何 env var、build flag、runtime hook 能關 CF 的 `pthread_atfork` handler**。
+> Source: <https://developer.apple.com/forums/thread/747499>
+
+**(5) Bash 為什麼會 link CF — ✓ 確認（透過 libintl/gettext 的 `CFPreferencesCopyAppValue`）**
 
 ```bash
-$ otool -L /opt/homebrew/opt/bash/bin/bash | grep CoreFoundation
-    /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
-                                          ↑ brew bash 5 連向 CoreFoundation
+$ /opt/homebrew/opt/bash/bin/bash --version
+GNU bash, version 5.3.9(1)-release (aarch64-apple-darwin25.1.0)
 
-$ otool -L /bin/bash | grep CoreFoundation
-                                          ↑ 空，Apple bash 3.2 沒連 CF
+$ otool -L /opt/homebrew/opt/bash/bin/bash
+    ...
+    /opt/homebrew/opt/gettext/lib/libintl.8.dylib                                    ← 透過這個拉 CF
+    /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation    ← 也直接 link
+
+$ /bin/bash --version
+GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)
+
+$ otool -L /bin/bash
+    /usr/lib/libncurses.5.4.dylib
+    /usr/lib/libSystem.B.dylib                                                       ← 完全沒 CF
 ```
 
-macOS 26 (Tahoe) 加嚴 CoreFoundation fork-safety 檢查。brew bash 5 連向 CF → 它 fork 出 subshell 後、child 還沒 exec() 之前，如果 CF runtime 內部初始化做某些事 → SIGSEGV abort。
+bash → libintl → CF 的真實原因：**GNU gettext 的 `gettext-runtime/intl/intl-macosx.c` 在 macOS 上呼 `CFPreferencesCopyAppValue(@"AppleLocale", kCFPreferencesCurrentApplication)` 拿系統 locale**。`m4/intlmacosx.m4` 在 configure 時偵測到這個 API 就會加 `-framework CoreFoundation` 到 `INTL_MACOSX_LIBS`。
 
-早期 macOS（messense CI 跑的 macOS 14/15）只 print warning 不 abort，這 issue 在 macOS 26 才浮現。
+→ **拉 CF 的 API 是 `CFPreferencesCopyAppValue`，不是 `CFLocale`**（doc 早先寫成 CFLocale 是錯的，已修正）。herd-community #1656 的 PHP-FPM crash trace verbatim 顯示這條 chain：`gettext() → libintl_dcigettext → _libintl_locale_name_default → CFPreferencesCopyAppValueWithContainerAndConfiguration`。
 
-**Speculative attempt（沒解到）**：
-- `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` — 看似有道理（disable fork safety），實測還是 SIGSEGV。原因：這 env var 只 disable Objective-C `+initialize` fork safety，不 disable CoreFoundation 整體 fork-safety（Apple 沒給 env var 關 CF 整套）。
+bash 5 build 時 `--with-installed-readline=yes --enable-nls --with-gettext` 等 flag 開了 NLS（國際化訊息），就拉 libintl，連帶 CF。Apple `/bin/bash` 3.2.57 是 Apple 自己 build，沒 link 任何 brew lib，純 libSystem。
 
-**真正解法**：強迫 ct-ng 用 Apple `/bin/bash` 3.2.57（沒 CF linkage）跑 autoconf subshell。但 ct-ng 的 `share/crosstool-ng/paths.sh` hardcode brew bash → 改不到（brew install 的檔，permission issue）。
+> Source:
+> - <https://github.com/beyondcode/herd-community/issues/1656>（含完整 stack trace）
+> - <https://github.com/coreutils/gnulib/blob/master/m4/intlmacosx.m4>
+
+**(6) `man 3 fork` CAVEATS — ⚠ partial（現有 wording 確認，導入版本不明）**
+
+```
+All APIs, including global data symbols, in any framework or library
+should be assumed to be unsafe after a fork() unless explicitly
+documented to be safe or async-signal safe. If you need to use these
+frameworks in the child process, you must exec.
+```
+
+可在 Mojave (10.14, 2018) 的 mirror 找到一樣的字串。manpage 底部「June 4, 1993」是 BSD 原始日期，**不是 Apple 加 framework caveat 的日期**。導入版本無 Apple 紀錄。
+
+#### 結論：兩個 bash 並用為什麼是對的
+
+- brew bash 5 + libintl + CF → child 進 `_libintl_locale_name_default` → 用 CF → macOS 26 abort（SIGSEGV exit 139 = 128 + 11）
+- Apple `/bin/bash` 3.2.57 沒 link libintl 也沒 link CF → child 安全
+- 沒有 env var 能關 CF fork abort（Quinn 官方確認）
+
+**真正解法**：強迫 ct-ng 用 Apple `/bin/bash` 3.2.57 跑 autoconf subshell。但 ct-ng 的 `share/crosstool-ng/paths.sh` hardcode brew bash → 改不到（brew install 的檔，permission issue）。
 
 **對 brew install 的 1.28 era 修法**：把整個 brew ct-ng install mirror 到 `tmp/ct-ng-local/`（local 可寫），patch local 的 `paths.sh`：
 ```diff
@@ -627,10 +1099,31 @@ macOS 26 (Tahoe) 加嚴 CoreFoundation fork-safety 檢查。brew bash 5 連向 C
 ct-ng() { "${CT_NG_LOCAL}/ct-ng" "$@"; }
 ```
 
-**Reference**：
-- macOS CoreFoundation fork-safety 機制：（Apple 不公開官方文件，行為見 `OBJC_DISABLE_INITIALIZE_FORK_SAFETY` 環境變數源碼 + `man 3 fork`「fork is unsafe to call from any code that uses CoreFoundation」）
-- 驗證 bash CF linkage：`otool -L /opt/homebrew/opt/bash/bin/bash | grep CoreFoundation`
-- `OBJC_DISABLE_INITIALIZE_FORK_SAFETY` 不 cover CoreFoundation 的討論（Stack Overflow / Apple dev forums）
+#### Reference（web research 2026-05 double-confirmed）
+
+**主要源**
+
+- [Apple 開源 `CFRuntime.c`](https://github.com/apple-oss-distributions/CF/blob/main/CFRuntime.c)（CF-1153.18 / Yosemite 為最後可公開版）
+- [Apple Developer Forums #747499](https://developer.apple.com/forums/thread/747499)（Quinn "The Eskimo!" 官方答：唯一解是 exec / posix_spawn）
+- [GNU gettext `m4/intlmacosx.m4`](https://github.com/coreutils/gnulib/blob/master/m4/intlmacosx.m4)（autoconf 偵測 CFPreferences 後加 `-framework CoreFoundation`）
+
+**下游 issue（佐證 macOS 26 abort 行為）**
+
+- [Celery #9894](https://github.com/celery/celery/issues/9894) — macOS 26.0 EXC_BAD_ACCESS / SIGSEGV
+- [herd-community #1656](https://github.com/beyondcode/herd-community/issues/1656) — macOS 26.3 PHP-FPM，含 `libintl_dcigettext → CFPreferencesCopyAppValueWithContainerAndConfiguration` 完整 stack trace
+- [hashcat #4511](https://github.com/hashcat/hashcat/issues/4511) — "insta segfault on macos Tahoe"
+- [PHP-src #11818](https://github.com/php/php-src/issues/11818) — ObjC `+initialize` SIGABRT 從 macOS 13.5 Ventura 開始
+
+**ObjC fork-safety env var 涵蓋範圍討論**
+
+- [wefearchange.org](https://www.wefearchange.org/2018/11/forkmacos.rst)（社群整理）
+
+**驗證指令**
+
+```bash
+otool -L /opt/homebrew/opt/bash/bin/bash | grep -E 'CoreFoundation|libintl'
+otool -L /opt/homebrew/opt/gettext/lib/libintl.8.dylib | grep CoreFoundation
+```
 
 **承接到 1.25 era**：1.25 自己 build 出來、不靠 brew → 我們直接寫進 1.25 安裝後手動修改清單（附錄 E #1 跟 #2）。但 1.25 era 的解法**反過來**：
 
@@ -687,11 +1180,10 @@ $ ls /tmp/ct-ng-src/.../packages/glibc/
 4. 重新做所有 macOS 26 patch（變成 Mechanism 7 的 11 個 fix）
 
 **Reference**：
-- glibc 2.12 移除 commit：<https://github.com/crosstool-ng/crosstool-ng/commit/6d5227b63b096b052dde8717822db259971db515>
-- ct-ng 1.25.0 release：<https://github.com/crosstool-ng/crosstool-ng/releases/tag/crosstool-ng-1.25.0>
-- ct-ng 1.25 package list：<https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.25.0/packages>
-- ct-ng 1.26 package list（已沒 2.12）：<https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.26.0/packages/glibc>
-
+- [glibc 2.12 移除 commit](https://github.com/crosstool-ng/crosstool-ng/commit/6d5227b63b096b052dde8717822db259971db515)
+- [ct-ng 1.25.0 release](https://github.com/crosstool-ng/crosstool-ng/releases/tag/crosstool-ng-1.25.0)
+- [ct-ng 1.25 package list](https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.25.0/packages)
+- [ct-ng 1.26 package list（已沒 2.12）](https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.26.0/packages/glibc)
 **承接到 1.25 era**：這個 finding 是整個 pivot 的觸發點。Mechanism 7 Fix #1 是這個 finding 的「修法」。Fix #4 (boolean V_X_Y pin) 也是吸收這個教訓 — 我們改成在 defconfig 明寫 `CT_GLIBC_V_2_12_1=y`，避免被 fall-through 又坑。
 
 ---
@@ -791,10 +1283,9 @@ build.log 的 debug 行印：
 **解法**：pivot 到 ct-ng 1.25.0（[release tarball](https://github.com/crosstool-ng/crosstool-ng/releases/tag/crosstool-ng-1.25.0)），它 ships glibc 2.12.1。
 
 **Reference**：
-- ct-ng 1.25 packages/glibc：<https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.25.0/packages/glibc>
-- 1.26 同目錄（沒 2.12）：<https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.26.0/packages/glibc>
-- glibc 移除 commit：<https://github.com/crosstool-ng/crosstool-ng/commit/6d5227b63b096b052dde8717822db259971db515>
-
+- [ct-ng 1.25 packages/glibc](https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.25.0/packages/glibc)
+- [1.26 同目錄（沒 2.12）](https://github.com/crosstool-ng/crosstool-ng/tree/crosstool-ng-1.26.0/packages/glibc)
+- [glibc 移除 commit](https://github.com/crosstool-ng/crosstool-ng/commit/6d5227b63b096b052dde8717822db259971db515)
 ---
 
 ### Fix #2 — bash `${var^^}: bad substitution`
@@ -826,8 +1317,8 @@ build.log 的 debug 行印：
 （autoconf subshell 仍用 `/bin/bash` via `CONFIG_SHELL` 避開 macOS 26 CoreFoundation fork-safety abort —兩個 bash 分流。）
 
 **Reference**：
-- bash 4 release notes (`^^` 加入)：<https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html>
-- macOS bash 3.2 history (GPLv3 issue)：<https://news.ycombinator.com/item?id=8842136>
+- [bash 4 release notes (`^^` 加入)](https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html)
+- [macOS bash 3.2 history (GPLv3 issue)](https://news.ycombinator.com/item?id=8842136)
 - 我們 build script 內 PATH 編排（讓 brew bash 在 invoke ct-ng Makefile 時被 SHELL 用到）：`toolchain/scripts/build.sh`
 
 ---
@@ -867,8 +1358,8 @@ build.log 的 debug 行印：
 ```
 
 **Reference**：
-- CVE-2022-37434：<https://nvd.nist.gov/vuln/detail/CVE-2022-37434>
-- zlib fossils archive 列表：<https://www.zlib.net/fossils/>
+- [CVE-2022-37434](https://nvd.nist.gov/vuln/detail/CVE-2022-37434)
+- [zlib fossils archive 列表](https://www.zlib.net/fossils/)
 - 驗證：`curl -sI https://www.zlib.net/fossils/zlib-1.2.12.tar.gz` → 200 OK
 
 ---
@@ -912,8 +1403,7 @@ CT_GLIBC_VERSION="2.35"
 **Reference**：
 - ct-ng kconfig template：[`maintainer/kconfig-versions.template`](https://github.com/crosstool-ng/crosstool-ng/blob/crosstool-ng-1.25.0/maintainer/kconfig-versions.template)
 - Generated `config/versions/glibc.in`（display this file 看 `choice "Version of glibc"` 區塊）
-- Linux Kconfig "choice" 語意：<https://www.kernel.org/doc/html/latest/kbuild/kconfig-language.html#choices>
-
+- [Linux Kconfig "choice" 語意](https://www.kernel.org/doc/html/latest/kbuild/kconfig-language.html#choices)
 ---
 
 ### Fix #5 — zlib `_stdio.h:322 expected identifier` (fdopen 撞 macOS)
@@ -968,7 +1458,7 @@ In file included from /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/in
 
 **Reference**：
 - `TARGET_OS_MAC` macro 定義：Apple `<TargetConditionals.h>`（Xcode CLT 內）
-- zlib upstream 1.2.13 修法（更全面）：<https://github.com/madler/zlib/commit/eff308af425b67093bab25f80f1ae950166bece1>
+- [zlib upstream 1.2.13 修法（更全面）](https://github.com/madler/zlib/commit/eff308af425b67093bab25f80f1ae950166bece1)
 - zlib 1.2.12 source `zutil.h:141-152`：`tmp/ct-ng-src/release-extract/crosstool-ng-1.25.0/packages/zlib/...`（在我們 ct-ng 1.25 unpack 過的 source 樹內）
 
 ---
@@ -998,10 +1488,9 @@ CT_EXTRA_CFLAGS_FOR_HOST="-Wno-error=incompatible-function-pointer-types -Wno-in
 （這 fix 後來在 #11 因換 GCC 14 而清空，因為 GCC 不認得 clang flag）
 
 **Reference**：
-- Apple Clang 16 release notes：<https://developer.apple.com/documentation/xcode-release-notes/xcode-16-release-notes>
-- Clang 16 release notes (`-Wincompatible-function-pointer-types` 預設升 error)：<https://releases.llvm.org/16.0.0/tools/clang/docs/ReleaseNotes.html>
-- Clang warning options：<https://clang.llvm.org/docs/DiagnosticsReference.html#wincompatible-function-pointer-types>
-
+- [Apple Clang 16 release notes](https://developer.apple.com/documentation/xcode-release-notes/xcode-16-release-notes)
+- [Clang 16 release notes (`-Wincompatible-function-pointer-types` 預設升 error)](https://releases.llvm.org/16.0.0/tools/clang/docs/ReleaseNotes.html)
+- [Clang warning options](https://clang.llvm.org/docs/DiagnosticsReference.html#wincompatible-function-pointer-types)
 ---
 
 ### Fix #7 — binutils libiberty `'PTR' undeclared`
@@ -1035,10 +1524,9 @@ ret->chunks = (PTR) malloc (CHUNK_SIZE);
 ```
 
 **Reference**：
-- binutils 2.38 ansidecl.h `#define PTR void *`（gitweb tag `binutils-2_38`）：<https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=include/ansidecl.h;hb=binutils-2_38>
-- binutils 2.46 ansidecl.h（PTR 已移除）：<https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=include/ansidecl.h;hb=binutils-2_46>
-- ct-ng issue #1788 PATH ordering / brew binutils 互動討論：<https://github.com/crosstool-ng/crosstool-ng/issues/1788>
-
+- [binutils 2.38 ansidecl.h `#define PTR void *`（gitweb tag `binutils-2_38`）](https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=include/ansidecl.h;hb=binutils-2_38)
+- [binutils 2.46 ansidecl.h（PTR 已移除）](https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=include/ansidecl.h;hb=binutils-2_46)
+- [ct-ng issue #1788 PATH ordering / brew binutils 互動討論](https://github.com/crosstool-ng/crosstool-ng/issues/1788)
 ---
 
 ### Fix #8 — Linux kernel `unifdef.c` `expected parameter declarator`
@@ -1085,11 +1573,10 @@ unifdef.c 寫這行的原因：2009 年 glibc 沒 `strlcpy`，自己宣告才有
 ```
 
 **Reference**：
-- Linux 2.6.32 `unifdef.c`：<https://elixir.bootlin.com/linux/v2.6.32.71/source/scripts/unifdef.c>
+- [Linux 2.6.32 `unifdef.c`](https://elixir.bootlin.com/linux/v2.6.32.71/source/scripts/unifdef.c)
 - macOS `_FORTIFY_SOURCE` 對 strlcpy 的 macro：`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/secure/_string.h`
-- glibc 2.38 終於加 strlcpy 的 commit：<https://sourceware.org/git/?p=glibc.git;a=commit;h=454a20c8756c9c1d055cd7e8b1fc1631bf26ea27>
-- Linux 3.x 後 in-tree unifdef 移除、改用 system unifdef：<https://lore.kernel.org/lkml/1395423091-3506-1-git-send-email-mmarek@suse.cz/>
-
+- [glibc 2.38 終於加 strlcpy 的 commit](https://sourceware.org/git/?p=glibc.git;a=commit;h=454a20c8756c9c1d055cd7e8b1fc1631bf26ea27)
+- [Linux 3.x 後 in-tree unifdef 移除、改用 system unifdef](https://lore.kernel.org/lkml/1395423091-3506-1-git-send-email-mmarek@suse.cz/)
 ---
 
 ### Fix #9 — stage-1 GCC 撞 Apple libc++ 21 (`__abi_tag__`)
@@ -1155,10 +1642,9 @@ export PATH="${WRAPPERS}:${PATH}"   # WRAPPERS 在最前面才能蓋過 /usr/bin
 | build script 內 export PATH，跳出 script 自動失效 | 避免 user shell 被永久污染 |
 
 **Reference**：
-- GCC bug #111632 (gcc fails to bootstrap when using libc++)：<https://gcc.gnu.org/bugzilla/show_bug.cgi?id=111632>
+- [GCC bug #111632 (gcc fails to bootstrap when using libc++)](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=111632)
 - GCC 官方 build 文件（討論 bootstrap 流程）：<https://gcc.gnu.org/install/build.html>（"with the same major version" 一句為社群慣例 / 我們經驗，GCC 文件本身只描述 3-stage bootstrap 流程而沒明示版本要求）
-- libc++ 21 release notes：<https://libcxx.llvm.org/ReleaseNotes/21.html>
-
+- [libc++ 21 release notes](https://libcxx.llvm.org/ReleaseNotes/21.html)
 ---
 
 ### Fix #10 — ct-ng 拒絕 `CC` env var
@@ -1186,7 +1672,7 @@ CT_TestAndAbort "Don't set CC. It screws up the build." -n "${CC+set}"
 **解法**：放棄用 `CC=` env var。改用 PATH manipulation：在 PATH 第一個位置放 wrapper symlinks，讓 ct-ng autoconf 找 `gcc` 時找到我們的 gcc-14（透過 wrapper 指向）。
 
 **Reference**：
-- ct-ng `crosstool-NG.sh:67`：<https://github.com/crosstool-ng/crosstool-ng/blob/crosstool-ng-1.25.0/scripts/crosstool-NG.sh#L65-L70>
+- [ct-ng `crosstool-NG.sh:67`](https://github.com/crosstool-ng/crosstool-ng/blob/crosstool-ng-1.25.0/scripts/crosstool-NG.sh#L65-L70)
 - 同檔對應的 CFLAGS / CXX 限制（line 65, 66, 68）
 
 ---
@@ -1217,10 +1703,9 @@ cc1: error: '-Wno-error=incompatible-function-pointer-types': no option '-Wincom
 ```
 
 **Reference**：
-- GCC warning options 列表：<https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html>
-- Clang warning options：<https://clang.llvm.org/docs/DiagnosticsReference.html>
-- 對照表 (GCC ↔ Clang flag mapping)：<https://gcc.gnu.org/wiki/ClangDiagnosticCompatibility>
-
+- [GCC warning options 列表](https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html)
+- [Clang warning options](https://clang.llvm.org/docs/DiagnosticsReference.html)
+- [對照表 (GCC ↔ Clang flag mapping)](https://gcc.gnu.org/wiki/ClangDiagnosticCompatibility)
 ---
 
 ### 遺留 error — 成功 build 仍報 1 個非致命 error
@@ -1260,7 +1745,7 @@ mv -f /Volumes/.../build/build-libc/multilib/tls.makeT /Volumes/.../build/build-
 **解法**：**不修**。這是 glibc 2.12 自己 Makefile dependency graph 的 race，已知非致命，整個 build 完成就 OK。我們 sysroot 內 `bits/stdio_lim.h` 已存在、用 user code `#include <stdio.h>` 不會踩到（user code 不會走 tls.make 那條路徑）。
 
 **Reference**：
-- glibc 2.12 Makerules（生成 stdio_lim.h 的 rule）：<https://sourceware.org/git/?p=glibc.git;a=blob;f=Makerules;hb=glibc-2.12.1>
+- [glibc 2.12 Makerules（生成 stdio_lim.h 的 rule）](https://sourceware.org/git/?p=glibc.git;a=blob;f=Makerules;hb=glibc-2.12.1)
 - glibc tls.make 生成邏輯：在 glibc source `Makefile` 內搜 "tls.make"
 - 類似 race 在新版 glibc 改善（2.30+ 用 build-many-glibcs.py 重整 dep graph）
 
@@ -1599,7 +2084,7 @@ fi
 2. `find` 算有幾個檔
 3. 如果 case-insensitive (一個檔)，就建 sparseimage
 
-**為什麼**：見 Mechanism 3。Linux source 有大小寫差別檔，需要 case-sensitive FS。我們用 HFS+ 不用 APFS（APFS metadata 跟 ncurses parallel build race，messense CI 也選 HFS+）。
+**為什麼**：見 Mechanism 3。Linux source 有大小寫差別檔，需要 case-sensitive FS。我們選 **Case-sensitive Journaled HFS+**，跟 messense CI 對齊——這是 convention，不是因為 APFS 有 race。早期 doc 寫「APFS metadata 跟 ncurses parallel build race」是誤判，已修正（見 Mechanism 3 修正框 + Finding #B：真因是 `LANG`/`LC_ALL` unset 害 gawk silent fail，不是 FS）。
 
 ### 區段 8：ct-ng 跑 build + log trap
 
@@ -2318,7 +2803,7 @@ sudo mkswap /swapfile && sudo swapon /swapfile
 **對我們 cross-toolchain 的影響**：build ct-ng 自己時 cc1plus 編 GCC source 也會吃幾 GB RAM。我們 16 GB+ Mac 沒踩到，但若是 8 GB Mac 跑 `CT_PARALLEL_JOBS=0` (= 全部 core) 可能 OOM。**修法**：defconfig 改 `CT_PARALLEL_JOBS=2` 之類。
 
 **Reference**：
-- GCC manual `-flto` memory cost：<https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html#index-flto>
+- [GCC manual `-flto` memory cost](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html#index-flto)
 - cc1plus OOM 在 GCC bootstrap 是已知現象（GCC mailing list / Stack Overflow 多筆討論；無單一權威 thread，本段內容為 Mac 16GB+ 自身實測）
 
 ---
@@ -2420,7 +2905,7 @@ file test
 # ELF 64-bit LSB executable, ...   ← 對了
 ```
 
-**Reference**：GCC `-c` flag：<https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html>。
+**Reference**：[GCC `-c` flag](https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html)。
 
 ---
 
