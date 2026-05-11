@@ -6,8 +6,8 @@
 # that ships glibc 2.12; brew's current 1.28 dropped it).
 #
 # Usage:
-#   bash toolchain/scripts/build.sh                                  # default defconfig
-#   bash toolchain/scripts/build.sh path/to/other.defconfig          # alternate config
+#   bash scripts/macos/build.sh                                  # default defconfig
+#   bash scripts/macos/build.sh path/to/other.defconfig          # alternate config
 #
 # Environment overrides:
 #   WORK_DIR=/path  ct-ng work / build dir (default: <repo>/tmp/ct-x86_64-centos6)
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DEFCONFIG="${1:-${REPO_ROOT}/toolchain/configs/x86_64-centos6-glibc212.defconfig}"
+DEFCONFIG="${1:-${REPO_ROOT}/configs/x86_64-centos6-glibc212.defconfig}"
 WORK_DIR="${WORK_DIR:-${REPO_ROOT}/tmp/ct-x86_64-centos6}"
 
 # Project-local ct-ng 1.25.0 install. Built from upstream release tarball.
@@ -29,7 +29,7 @@ fi
 
 if [[ ! -x "${CT_NG_BIN}" ]]; then
     echo "ERROR: ct-ng 1.25 not installed at ${CT_NG_PREFIX}." >&2
-    echo "Run: bash ${REPO_ROOT}/toolchain/bootstrap-ctng.sh" >&2
+    echo "Run: bash ${REPO_ROOT}/scripts/macos/bootstrap-ctng.sh" >&2
     exit 1
 fi
 

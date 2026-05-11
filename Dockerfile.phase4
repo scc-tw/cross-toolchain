@@ -20,7 +20,7 @@
 #     glibc 2.17 floor lets libbpf-dependent code link cleanly (libbpf needs
 #     glibc symbols newer than 2.12).
 #
-# Workflow matches Phase 1/2 (shares scripts/docker-build-target.sh):
+# Workflow matches Phase 1/2 (shares scripts/docker/container/docker-build-target.sh):
 #   docker build --platform=linux/arm64 -t finalfantasyliu/cross-toolbox:phase4 \
 #                -f toolchain/Dockerfile.phase4 toolchain/
 #   docker run --rm --platform=linux/arm64 \
@@ -104,7 +104,7 @@ RUN set -eux; \
 USER root
 ENV PATH=/opt/ct-ng-1.28/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-COPY --chmod=755 scripts/docker-build-target.sh /usr/local/bin/docker-build-target.sh
+COPY --chmod=755 scripts/docker/container/docker-build-target.sh /usr/local/bin/docker-build-target.sh
 
 USER ctuser
 WORKDIR /build

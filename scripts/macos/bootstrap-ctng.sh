@@ -11,14 +11,14 @@
 #     needs bash 4+, but macOS /bin/bash is 3.2 (chicken-and-egg).
 #   - Install goes to repo-local tmp/ct-ng-1.25/ to avoid conflict with
 #     brew's 1.28 in /opt/homebrew/.
-#   - Apply our 4 macOS 26 patches automatically (see toolchain/patches/
+#   - Apply our 4 macOS 26 patches automatically (see patches/
 #     and the inline modifications below).
 #
 # Usage:
-#   bash toolchain/bootstrap-ctng.sh
+#   bash scripts/macos/bootstrap-ctng.sh
 #
 # After bootstrap, run:
-#   bash toolchain/build-1.25.sh
+#   bash scripts/macos/build.sh
 
 set -euo pipefail
 
@@ -46,10 +46,10 @@ done
 
 echo
 echo "=== 2/6  extract release tarball ==="
-TARBALL="${REPO_ROOT}/toolchain/vendor/ct-ng-1.25.0-release.tar.xz"
+TARBALL="${REPO_ROOT}/vendor/ct-ng-1.25.0-release.tar.xz"
 if [[ ! -f "${TARBALL}" ]]; then
     echo "Tarball missing — downloading from upstream..."
-    mkdir -p "${REPO_ROOT}/toolchain/vendor"
+    mkdir -p "${REPO_ROOT}/vendor"
     curl -fsSL -o "${TARBALL}" \
         "https://github.com/crosstool-ng/crosstool-ng/releases/download/crosstool-ng-1.25.0/crosstool-ng-1.25.0.tar.xz"
 fi
@@ -112,9 +112,9 @@ echo "  ✓ 220-ncurses.sh LANG=C patch"
 
 echo
 echo "=== 5/6  copy our 2 patches to ct-ng package dirs ==="
-cp "${REPO_ROOT}/toolchain/patches/zlib-1.2.12-0002-fix-fdopen-macos.patch" \
+cp "${REPO_ROOT}/patches/zlib-1.2.12-0002-fix-fdopen-macos.patch" \
    "${CT_NG_PREFIX}/share/crosstool-ng/packages/zlib/1.2.12/0002-fix-fdopen-macos.patch"
-cp "${REPO_ROOT}/toolchain/patches/linux-2.6.32.71-0001-fix-unifdef-strlcpy-macos.patch" \
+cp "${REPO_ROOT}/patches/linux-2.6.32.71-0001-fix-unifdef-strlcpy-macos.patch" \
    "${CT_NG_PREFIX}/share/crosstool-ng/packages/linux/2.6.32.71/0001-fix-unifdef-strlcpy-macos.patch"
 echo "  ✓ zlib fdopen patch"
 echo "  ✓ linux unifdef patch"
@@ -124,4 +124,4 @@ echo "=== 6/6  verify ==="
 "${CT_NG_BIN}" version | head -3
 echo
 echo "✅ ct-ng 1.25 ready at ${CT_NG_PREFIX}"
-echo "Next: bash toolchain/build-1.25.sh"
+echo "Next: bash scripts/macos/build.sh"

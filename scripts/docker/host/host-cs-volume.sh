@@ -12,10 +12,10 @@
 # to the volume, and HFS+ is the proven combo. Don't introduce new risk.
 #
 # Usage:
-#   bash toolchain/scripts/host-cs-volume.sh attach
-#   bash toolchain/scripts/host-cs-volume.sh detach
-#   bash toolchain/scripts/host-cs-volume.sh path     # print mount path (for $(...))
-#   bash toolchain/scripts/host-cs-volume.sh status   # check if attached
+#   bash scripts/docker/host/host-cs-volume.sh attach
+#   bash scripts/docker/host/host-cs-volume.sh detach
+#   bash scripts/docker/host/host-cs-volume.sh path     # print mount path (for $(...))
+#   bash scripts/docker/host/host-cs-volume.sh status   # check if attached
 #
 # After `attach`, mount point is /Volumes/capsule8-xtools/ (regardless of where
 # the sparseimage file lives).
@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 SPARSE="${REPO_ROOT}/_xtools.sparseimage"   # in repo dir, gitignored
 VOLNAME="capsule8-xtools"
 MOUNT="/Volumes/${VOLNAME}"

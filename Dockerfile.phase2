@@ -90,7 +90,7 @@ RUN set -eux; \
 USER root
 ENV PATH=/opt/ct-ng-1.28/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-COPY --chmod=755 scripts/docker-build-target.sh /usr/local/bin/docker-build-target.sh
+COPY --chmod=755 scripts/docker/container/docker-build-target.sh /usr/local/bin/docker-build-target.sh
 
 USER ctuser
 WORKDIR /build

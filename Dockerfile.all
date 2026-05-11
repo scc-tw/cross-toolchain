@@ -200,7 +200,7 @@ RUN set -eux; \
     ls /usr/local/bin/*linux-gnu-gcc
 
 # Copy entrypoint script
-COPY --chmod=755 scripts/cross-toolchain-entrypoint.sh /usr/local/bin/cross-toolchain-entrypoint.sh
+COPY --chmod=755 scripts/docker/container/cross-toolchain-entrypoint.sh /usr/local/bin/cross-toolchain-entrypoint.sh
 
 # PATH: prepend all toolchain bin dirs + Go bin.
 # Order: user-local symlinks → Linux toolchains → osxcross → Go → system

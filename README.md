@@ -128,7 +128,7 @@ Dockerfile.all            Final consumer image, combines all four phases plus Go
 Dockerfile.ebpf-builder   Companion image: clang-19, bpftool, and libbpf headers
 ```
 
-Phase 1, 2, and 4 are builder images. Running `docker build` on each produces an image that, when invoked with `docker run`, executes `crosstool-ng` and emits a toolchain tarball into a mounted volume. Phase 3 builds osxcross directly inside its image. Phase 1 additionally requires CentOS 6 RPM artifacts for its gdbserver build; the helper script is at `scripts/prepare-centos6-real-sysroot.sh`.
+Phase 1, 2, and 4 are builder images. Running `docker build` on each produces an image that, when invoked with `docker run`, executes `crosstool-ng` and emits a toolchain tarball into a mounted volume. Phase 3 builds osxcross directly inside its image. Phase 1 additionally requires CentOS 6 RPM artifacts for its gdbserver build; the helper script is at `scripts/docker/host/prepare-centos6-real-sysroot.sh`.
 
 Detailed build instructions, including the GCC 15 backport patches and macOS 26 host fixes, live in:
 
@@ -174,7 +174,11 @@ cross-toolchain/
 │   ├── docker-experiments.md      phase-by-phase Docker build journal
 │   └── crowdstrike-ebpf-research.md  eBPF kernel-requirement research
 │
-├── scripts/                       helper scripts invoked from Dockerfiles
+├── scripts/                       helper scripts, split by where they run
+│   ├── macos/                     macOS-native build (no Docker): bootstrap-ctng, build
+│   └── docker/                    Docker build pipeline
+│       ├── host/                  runs on macOS host: sparseimage, RPM-sysroot prep
+│       └── container/             runs inside the image: ct-ng driver, entrypoint
 ├── configs/                       crosstool-ng .defconfig files (one per phase)
 ├── patches/                       crosstool-ng and glibc backport patches
 ├── vendor/                        upstream source archives (ct-ng, SDK)

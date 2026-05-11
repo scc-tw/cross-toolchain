@@ -14,7 +14,7 @@
 #   docker run --rm --platform=linux/arm64 \
 #       -v /Volumes/capsule8-xtools:/opt/x-tools \
 #       -v "$PWD/_logs:/build" \
-#       -v "$PWD/toolchain/scripts:/scripts:ro" \
+#       -v "$PWD/scripts/docker/container:/scripts:ro" \
 #       --entrypoint /scripts/build-phase1-gdbserver.sh \
 #       finalfantasyliu/cross-toolbox:phase1
 #
@@ -88,7 +88,7 @@ export PATH="${CROSS_PREFIX}/bin:${PATH}"
 # (先跑 prepare-centos6-real-sysroot.sh 一次性準備)
 if [[ ! -d "${REAL_SYSROOT}" || ! -f "${REAL_SYSROOT}/usr/include/stdio.h" ]]; then
     echo "ERROR: ${REAL_SYSROOT} 沒準備好" >&2
-    echo "先在 host 跑: bash toolchain/scripts/prepare-centos6-real-sysroot.sh" >&2
+    echo "先在 host 跑: bash scripts/docker/host/prepare-centos6-real-sysroot.sh" >&2
     exit 1
 fi
 echo "=== using real CentOS 6.10 sysroot: ${REAL_SYSROOT} ==="

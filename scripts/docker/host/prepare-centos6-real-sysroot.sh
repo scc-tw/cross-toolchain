@@ -8,7 +8,7 @@
 # that vanilla glibc 2.12.1 + kernel 2.6.32 lacks.
 #
 # 用法 (host macOS):
-#   bash toolchain/scripts/prepare-centos6-real-sysroot.sh
+#   bash scripts/docker/host/prepare-centos6-real-sysroot.sh
 #
 # 產物:
 #   /Volumes/capsule8-xtools/_phase1-real-sysroot/
@@ -117,4 +117,4 @@ echo
 echo "=== ✓ /Volumes/capsule8-xtools/_phase1-real-sysroot/ 準備好 ==="
 echo
 echo "Container 內可用路徑: /opt/x-tools/_phase1-real-sysroot/"
-echo "下一步: bash toolchain/scripts/build-phase1-gdbserver.sh (用 --sysroot 指這個)"
+echo "下一步: bash scripts/docker/container/build-phase1-gdbserver.sh (用 --sysroot 指這個)"

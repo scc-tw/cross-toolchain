@@ -24,12 +24,12 @@
 #   - container exits non-zero so CI / `set -e` callers detect failure
 #
 # Iteration loop:
-#   1. tweak defconfig in toolchain/configs/
+#   1. tweak defconfig in configs/
 #   2. re-run docker run (defconfig changes need image rebuild — fast, only
 #      final COPY layer)
 #   3. inspect _logs/build.log on failure
 #   4. if source patch needed, drop in
-#      toolchain/patches/ct-ng-1.25-gcc15-backport/packages/<pkg>/<ver>/
+#      patches/ct-ng-1.25-gcc15-backport/packages/<pkg>/<ver>/
 
 set -euxo pipefail
 # pipefail: with `cmd | tee log`, ensure cmd's failure propagates.

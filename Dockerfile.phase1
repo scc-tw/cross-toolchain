@@ -35,7 +35,7 @@
 #         finalfantasyliu/cross-toolbox:phase1 \
 #         x86_64-centos6-glibc212-gcc15
 #
-#   ③ Iterate: tweak defconfig in toolchain/configs/ + re-run step ②.
+#   ③ Iterate: tweak defconfig in configs/ + re-run step ②.
 #      defconfigs / patches are baked into the image so you DO need to rebuild
 #      if you edit them — but only the small final layers change, so it's fast.
 #
@@ -286,7 +286,7 @@ RUN set -eux; \
     # zlib 1.2.12 (2022-03) had CVE-2022-37434 → upstream pulled the tarball
     # from both sourceforge and zlib.net root. Only zlib.net/fossils/ still
     # carries it. Same fix as macOS-host path (crosstool_ng_explained.md
-    # Mechanism 7 Fix #3, also applied in toolchain/scripts/bootstrap-ctng.sh).
+    # Mechanism 7 Fix #3, also applied in scripts/macos/bootstrap-ctng.sh).
     sed -i \
         "s|mirrors='http://downloads.sourceforge.net/project/libpng/zlib/\${CT_ZLIB_VERSION} https://www.zlib.net/'|mirrors='https://www.zlib.net/fossils https://www.zlib.net/'|" \
         packages/zlib/package.desc; \
@@ -355,7 +355,7 @@ ENV PATH=/opt/ct-ng-1.25/bin:$PATH
 # at top of file. Iteration is via `docker run` against the same image.
 # -----------------------------------------------------------------------------
 USER root
-COPY --chmod=755 scripts/docker-build-target.sh /usr/local/bin/docker-build-target.sh
+COPY --chmod=755 scripts/docker/container/docker-build-target.sh /usr/local/bin/docker-build-target.sh
 USER ctuser
 
 WORKDIR /build
