@@ -125,19 +125,70 @@ fi
 
 TARGET=$(basename "${PREFIX}")
 GCC_BIN="${PREFIX}/bin/${TARGET}-gcc"
+SYSROOT="${PREFIX}/${TARGET}/sysroot"
 
 if [[ ! -x "${GCC_BIN}" ]]; then
     echo "FAIL: install dir ${PREFIX} exists but ${GCC_BIN} missing/non-exec" >&2
     exit 1
 fi
 
+if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
+    OVERLAY=/opt/glibc-2.12.1-x86_64-multilib-sysroot/usr/include
+    if [[ ! -d "${OVERLAY}" ]]; then
+        echo "FAIL: missing glibc multilib header overlay: ${OVERLAY}" >&2
+        exit 1
+    fi
+
+    echo "=== applying glibc 2.12 x86_64 multilib header overlay ==="
+    chmod -R u+w "${SYSROOT}/usr/include"
+    cp -a "${OVERLAY}/." "${SYSROOT}/usr/include/"
+    chmod -R u-w "${SYSROOT}/usr/include"
+fi
+
+check_wordsize() {
+    local label="$1"
+    local cflag="$2"
+    local want_pointer="$3"
+    local want_wordsize="$4"
+    local want_uintptr="$5"
+    local args=()
+    local macros pointer_size wordsize uintptr_max
+
+    if [[ -n "${cflag}" ]]; then
+        args+=("${cflag}")
+    fi
+
+    macros=$(printf '#include <stdint.h>\n#include <bits/wordsize.h>\n' \
+        | "${GCC_BIN}" "${args[@]}" -dM -E -x c -)
+    pointer_size=$(awk '/^#define __SIZEOF_POINTER__/ {print $3}' <<<"${macros}" | tail -1)
+    wordsize=$(awk '/^#define __WORDSIZE / {print $3}' <<<"${macros}" | tail -1)
+    uintptr_max=$(awk '/^#define UINTPTR_MAX / {print substr($0, index($0, $3))}' <<<"${macros}" | tail -1)
+
+    echo "  ${label}: __SIZEOF_POINTER__=${pointer_size:-missing} __WORDSIZE=${wordsize:-missing} UINTPTR_MAX=${uintptr_max:-missing}"
+
+    if [[ "${pointer_size}" != "${want_pointer}" \
+       || "${wordsize}" != "${want_wordsize}" \
+       || "${uintptr_max}" != "${want_uintptr}" ]]; then
+        echo "FAIL: ${label} glibc headers disagree with target pointer width" >&2
+        exit 1
+    fi
+}
+
 echo
 echo "=== smoke test ==="
 "${GCC_BIN}" --version | head -1
-echo "sysroot: $("${GCC_BIN}" -print-sysroot)"
+echo "sysroot: ${SYSROOT}"
 
-LIBC="${PREFIX}/${TARGET}/sysroot/lib/libc.so.6"
-[[ -f "${LIBC}" ]] || LIBC="${PREFIX}/${TARGET}/sysroot/lib64/libc.so.6"
+echo "target header sanity:"
+if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
+    check_wordsize "m64" "" 8 64 "(18446744073709551615UL)"
+    check_wordsize "m32" "-m32" 4 32 "(4294967295U)"
+else
+    check_wordsize "default" "" 8 64 "(18446744073709551615UL)"
+fi
+
+LIBC="${SYSROOT}/lib/libc.so.6"
+[[ -f "${LIBC}" ]] || LIBC="${SYSROOT}/lib64/libc.so.6"
 if [[ -f "${LIBC}" ]]; then
     echo "GLIBC versions in sysroot libc (top 3):"
     "${PREFIX}/bin/${TARGET}-objdump" -T "${LIBC}" 2>/dev/null \

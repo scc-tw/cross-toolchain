@@ -2,12 +2,15 @@
 
 ## What this is
 
-Two header files from glibc 2.12.1's `sysdeps/unix/sysv/linux/x86_64/sys/`:
-- `reg.h` — register name constants (RAX, RBX, ORIG_RAX, ...)
-- `user.h` — `struct user_regs_struct` with x86_64 fields (rax, orig_rax, ...)
+A small overlay of architecture-sensitive glibc 2.12.1 x86 headers, including:
+- `bits/wordsize.h` — selects 64-bit vs 32-bit ABI from compiler defines
+- `bits/pthreadtypes.h` — uses wordsize-dependent pthread layouts
+- `sys/reg.h` — register name constants (RAX, RBX, ORIG_RAX, ...)
+- `sys/user.h` — `struct user_regs_struct` with x86_64 fields (rax, orig_rax, ...)
 
-Both use `#if __WORDSIZE == 64` to switch x86_64 vs i386 macros, falling
-through to the i386 versions for 32-bit compile.
+These headers use compiler-defined architecture macros, directly or via
+`__WORDSIZE`, so 64-bit compiles see x86_64 definitions while `-m32` compiles
+keep seeing i386 definitions.
 
 ## Why we need them
 
@@ -35,7 +38,7 @@ Same root cause as Phase 1 Error #19 (`bits/select.h`).
 
 ## Source
 
-Files fetched 2026-05-09 from sourceware:
+Initial files fetched 2026-05-09 from sourceware:
 - https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=sysdeps/unix/sysv/linux/x86_64/sys/reg.h;hb=refs/tags/glibc-2.12.1
 - https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=sysdeps/unix/sysv/linux/x86_64/sys/user.h;hb=refs/tags/glibc-2.12.1
 
@@ -47,12 +50,14 @@ written. No ABI / symbol-version impact (compile-time only).
 ```bash
 # DESTINATION = the sysroot
 SYSROOT=/opt/x-tools/x86_64-centos6-linux-gnu/x86_64-centos6-linux-gnu/sysroot
-chmod -R u+w "${SYSROOT}/usr/include/sys"
-cp -fv reg.h user.h "${SYSROOT}/usr/include/sys/"
-chmod -R u-w "${SYSROOT}/usr/include/sys"   # optional, restore RO
+chmod -R u+w "${SYSROOT}/usr/include"
+cp -a usr/include/. "${SYSROOT}/usr/include/"
+chmod -R u-w "${SYSROOT}/usr/include"   # optional, restore RO
 ```
 
-`build-phase1-gdbserver.sh` does this automatically before configure.
+`docker-build-target.sh` applies this automatically after the Phase 1 ct-ng
+build, before the toolchain is packaged. `build-phase1-gdbserver.sh` also uses a
+real CentOS sysroot for its standalone gdbserver build.
 
 ## Future ct-ng integration
 

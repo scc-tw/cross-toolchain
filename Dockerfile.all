@@ -162,6 +162,19 @@ RUN set -eux; \
     /opt/x-tools/x86_64-centos7-linux-gnu/bin/x86_64-centos7-linux-gnu-gcc --version; \
     /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-gcc --version; \
     /opt/osxcross/bin/x86_64-apple-darwin20.4-clang --version; \
+    printf '#include <stdint.h>\n#include <bits/wordsize.h>\n' \
+        | /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-gcc -dM -E -x c - \
+        > /tmp/x86_64-centos6-m64-macros; \
+    grep -q '^#define __SIZEOF_POINTER__ 8$' /tmp/x86_64-centos6-m64-macros; \
+    grep -q '^#define __WORDSIZE 64$' /tmp/x86_64-centos6-m64-macros; \
+    grep -q '^#define UINTPTR_MAX (18446744073709551615UL)$' /tmp/x86_64-centos6-m64-macros; \
+    printf '#include <stdint.h>\n#include <bits/wordsize.h>\n' \
+        | /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-gcc -m32 -dM -E -x c - \
+        > /tmp/x86_64-centos6-m32-macros; \
+    grep -q '^#define __SIZEOF_POINTER__ 4$' /tmp/x86_64-centos6-m32-macros; \
+    grep -q '^#define __WORDSIZE 32$' /tmp/x86_64-centos6-m32-macros; \
+    grep -q '^#define UINTPTR_MAX (4294967295U)$' /tmp/x86_64-centos6-m32-macros; \
+    rm -f /tmp/x86_64-centos6-m64-macros /tmp/x86_64-centos6-m32-macros; \
     \
     # Sanity: extras layout
     echo "=== verifying Phase 1 extras ==="; \

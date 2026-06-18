@@ -3,7 +3,9 @@
 # Phase 1 (this file):
 #   Build ct-ng 1.25 from source + backport GCC 15.2.0 metadata
 #   → produce x86_64-centos6-linux-gnu (glibc 2.12.1 + GCC 15.2.0)
-#   With MULTILIB: x86_64 (default) + i686 (-m32) sysroots both built
+#   With MULTILIB: x86_64 (default) + i686 (-m32) sysroots both built.
+#   A post-build header overlay keeps -m64 on 64-bit glibc headers while -m32
+#   keeps using 32-bit glibc headers.
 #
 # Phase 2 (separate file: Dockerfile.phase2):
 #   ct-ng 1.28 native (no backport) → aarch64-centos7-linux-gnu
@@ -134,6 +136,7 @@ RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
 # -----------------------------------------------------------------------------
 COPY --chown=ctuser:ctuser vendor/ct-ng-1.25.0-release.tar.xz /tmp/
 COPY --chown=ctuser:ctuser patches/ct-ng-1.25-gcc15-backport/ /tmp/gcc15-backport/
+COPY --chown=ctuser:ctuser patches/glibc-2.12.1-x86_64-multilib-sysroot/ /opt/glibc-2.12.1-x86_64-multilib-sysroot/
 
 # All defconfigs (baked into image; defconfig name passed at docker run time)
 COPY --chown=ctuser:ctuser configs/ /configs/
