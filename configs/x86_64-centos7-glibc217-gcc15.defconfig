@@ -62,3 +62,7 @@ CT_GDB_GDBSERVER=y
 # === Output prefix ===
 CT_PREFIX_DIR="/opt/x-tools/${CT_TARGET}"
 CT_PREFIX_DIR_RO=y
+
+# === Source cache ===
+CT_LOCAL_TARBALLS_DIR="${HOME}/.crosstool-ng-tarballs"
+CT_SAVE_TARBALLS=y

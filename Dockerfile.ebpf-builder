@@ -18,7 +18,7 @@
 #
 # CONTENTS:
 #   - clang-19 + lld-19 + llvm-19  (apt.llvm.org)  → `clang -target bpf` compile
-#   - bpftool v7.5.0 (static prebuilt binary, arm64) → vmlinux.h + skeleton gen
+#   - bpftool v7.5.0 (static prebuilt binary for the image arch) → vmlinux.h + skeleton gen
 #   - libbpf v1.5.0 BPF-side headers (bpf_helpers.h, bpf_tracing.h, bpf_core_read.h, ...)
 #   - make + bash + python3 (Makefile + apt.llvm.org install script)
 #
@@ -41,28 +41,30 @@
 #
 # Usage examples:
 #   # Build the image (~5 min)
-#   docker build --platform=linux/arm64 -t finalfantasyliu/ebpf-builder:latest \
+#   docker build --platform=linux/amd64 -t finalfantasyliu/ebpf-builder:latest \
 #                -f toolchain/Dockerfile.ebpf-builder toolchain/
 #
 #   # Compile a BPF program (CO-RE)
-#   docker run --rm --platform=linux/arm64 -v "$PWD:/work" \
+#   docker run --rm --platform=linux/amd64 -v "$PWD:/work" \
 #       finalfantasyliu/ebpf-builder:latest \
 #       clang-19 -O2 -g -target bpf \
 #                -I/opt/libbpf/include \
 #                -c probe.bpf.c -o probe.bpf.o
 #
 #   # Generate skeleton header for cilium/ebpf or libbpf-style userspace
-#   docker run --rm --platform=linux/arm64 -v "$PWD:/work" \
+#   docker run --rm --platform=linux/amd64 -v "$PWD:/work" \
 #       finalfantasyliu/ebpf-builder:latest \
 #       bpftool gen skeleton probe.bpf.o > probe.skel.h
 #
 #   # Generate vmlinux.h from running kernel BTF (do this on the TARGET host)
-#   docker run --rm --platform=linux/arm64 \
+#   docker run --rm --platform=linux/amd64 \
 #       -v /sys/kernel/btf:/sys/kernel/btf:ro -v "$PWD:/work" \
 #       finalfantasyliu/ebpf-builder:latest \
 #       bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
-FROM --platform=linux/arm64 ubuntu:24.04
+FROM ubuntu:24.04
+
+ARG TARGETARCH
 
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
@@ -113,15 +115,19 @@ RUN ln -sf /usr/bin/clang-19   /usr/local/bin/clang \
 # ──────────────────────────────────────────────────────────────────
 # bpftool v7.5.0 (static prebuilt — no source compile needed)
 # ──────────────────────────────────────────────────────────────────
-# arm64 sha256: 80e0d5b59bfbc7ecce06985802babf4c2b4ff78be3640202a19e3d7278fceb7b
-# (verified against https://github.com/libbpf/bpftool/releases/download/v7.5.0/bpftool-v7.5.0-arm64.tar.gz.sha256sum)
 ARG BPFTOOL_VERSION=7.5.0
+ARG BPFTOOL_SHA256_AMD64=6b81db78c797e63f13e644ceb2064e5236afaf904bbaaa367785170819768f0a
 ARG BPFTOOL_SHA256_ARM64=80e0d5b59bfbc7ecce06985802babf4c2b4ff78be3640202a19e3d7278fceb7b
 RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) BPFTOOL_ARCH=amd64; BPFTOOL_SHA256="${BPFTOOL_SHA256_AMD64}" ;; \
+        arm64) BPFTOOL_ARCH=arm64; BPFTOOL_SHA256="${BPFTOOL_SHA256_ARM64}" ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}; expected amd64 or arm64" >&2; exit 1 ;; \
+    esac; \
     cd /tmp; \
-    curl -fsSLO "https://github.com/libbpf/bpftool/releases/download/v${BPFTOOL_VERSION}/bpftool-v${BPFTOOL_VERSION}-arm64.tar.gz"; \
-    echo "${BPFTOOL_SHA256_ARM64}  bpftool-v${BPFTOOL_VERSION}-arm64.tar.gz" | sha256sum -c -; \
-    tar xzf "bpftool-v${BPFTOOL_VERSION}-arm64.tar.gz"; \
+    curl -fsSLO "https://github.com/libbpf/bpftool/releases/download/v${BPFTOOL_VERSION}/bpftool-v${BPFTOOL_VERSION}-${BPFTOOL_ARCH}.tar.gz"; \
+    echo "${BPFTOOL_SHA256}  bpftool-v${BPFTOOL_VERSION}-${BPFTOOL_ARCH}.tar.gz" | sha256sum -c -; \
+    tar xzf "bpftool-v${BPFTOOL_VERSION}-${BPFTOOL_ARCH}.tar.gz"; \
     install -m 755 bpftool /usr/local/bin/bpftool; \
     rm -f /tmp/bpftool*; \
     bpftool version

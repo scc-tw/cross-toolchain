@@ -18,6 +18,20 @@ readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 readonly SRC_DIR="${SCRIPT_DIR}/src"
 readonly OUT_DIR="${SCRIPT_DIR}/out"
 
+default_toolbox_platform() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo linux/amd64 ;;
+        arm64|aarch64) echo linux/arm64 ;;
+        *) echo "" ;;
+    esac
+}
+
+readonly TOOLBOX_PLATFORM="${TOOLBOX_PLATFORM:-$(default_toolbox_platform)}"
+TOOLBOX_PLATFORM_ARGS=()
+if [[ -n "${TOOLBOX_PLATFORM}" ]]; then
+    TOOLBOX_PLATFORM_ARGS=(--platform="${TOOLBOX_PLATFORM}")
+fi
+
 mkdir -p "${OUT_DIR}"
 
 # Common flags for SQLite shell build (per upstream README)
@@ -61,7 +75,7 @@ build_linux() {
 
     # Build inside the existing phase image, with toolchain mounted from sparseimage
     docker run --rm \
-        --platform=linux/arm64 \
+        "${TOOLBOX_PLATFORM_ARGS[@]}" \
         -v /Volumes/capsule8-xtools:/opt/x-tools \
         -v "${SRC_DIR}:/src:ro" \
         -v "${OUT_DIR}:/out" \
@@ -118,7 +132,7 @@ build_macos() {
     print_header "Building ${triple}  (Phase 3 osxcross, deploy ${minver}+)"
 
     docker run --rm \
-        --platform=linux/arm64 \
+        "${TOOLBOX_PLATFORM_ARGS[@]}" \
         -v "${SRC_DIR}:/src:ro" \
         -v "${OUT_DIR}:/out" \
         finalfantasyliu/cross-toolbox:phase3 \

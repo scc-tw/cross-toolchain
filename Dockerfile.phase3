@@ -28,21 +28,21 @@
 #
 # Usage:
 #   # Build the image (~30-50 min; the builder stage runs build.sh)
-#   docker build --platform=linux/arm64 -t finalfantasyliu/cross-toolbox:phase3 \
+#   docker build --platform=linux/amd64 -t finalfantasyliu/cross-toolbox:phase3 \
 #                -f toolchain/Dockerfile.phase3 toolchain/
 #
 #   # Compile a macOS Intel binary
-#   docker run --rm --platform=linux/arm64 -v "$PWD:/work" finalfantasyliu/cross-toolbox:phase3 \
+#   docker run --rm --platform=linux/amd64 -v "$PWD:/work" finalfantasyliu/cross-toolbox:phase3 \
 #       x86_64-apple-darwin20.4-clang -mmacos-version-min=10.15 hello.c -o hello-intel
 #
 #   # Export the entire toolchain
-#   docker run --rm --platform=linux/arm64 finalfantasyliu/cross-toolbox:phase3 \
-#       tar -cJf - -C /opt/osxcross . > dist/osxcross-MacOSX11.3.tar.xz
+#   docker run --rm --platform=linux/amd64 --entrypoint /usr/bin/tar finalfantasyliu/cross-toolbox:phase3 \
+#       -cf - -C /opt osxcross | xz -T0 -c > dist/osxcross-MacOSX11.3.tar.xz
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1: builder
 # ─────────────────────────────────────────────────────────────────────────────
-FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 # bash + -e + pipefail (hadolint DL4006)
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
@@ -129,7 +129,7 @@ RUN set -eu; \
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2: final image (what users actually `docker run`)
 # ─────────────────────────────────────────────────────────────────────────────
-FROM --platform=linux/arm64 ubuntu:24.04 AS final
+FROM ubuntu:24.04 AS final
 
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 

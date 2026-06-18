@@ -13,6 +13,9 @@ build.log*
 # image is at hub.docker.com/r/leavevm0cl6/cross-toolchain.
 dist/
 
+# --- upstream source cache (large, regenerable from official mirrors) ---
+sources/
+
 # --- macOS SDK tarball (large, license-restricted) ---
 # Phase 3 needs MacOSX11.3.sdk.tar.xz from joseluisq/macosx-sdks (~1.6 GB).
 # Download separately, see Dockerfile.phase3 header for instructions.

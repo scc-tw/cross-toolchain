@@ -23,13 +23,13 @@
 # Workflow (split from older single-step design):
 #
 #   ① Build the image ONCE (~5 min, only depends on apt + ct-ng source):
-#      docker build --platform=linux/arm64 \
+#      docker build --platform=linux/amd64 \
 #         -t finalfantasyliu/cross-toolbox:phase1 -f toolchain/Dockerfile.phase1 toolchain/
 #
 #   ② Run cross-toolchain build per target (~60-100 min for x86_64 multilib):
 #      mkdir -p _out _logs
 #      docker run --rm \
-#         --platform=linux/arm64 \
+#         --platform=linux/amd64 \
 #         -v "$PWD/_out:/opt/x-tools" \
 #         -v "$PWD/_logs:/build" \
 #         finalfantasyliu/cross-toolbox:phase1 \
@@ -50,7 +50,7 @@
 # Stage: builder — single stage for now (phase 1 only).
 #   Phase 2/3 will add more stages later.
 # -----------------------------------------------------------------------------
-FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 # Survey result (2026-05-09):
 #   - ubuntu:24.04 weekly pulls 5.77M, last refreshed 4 days ago

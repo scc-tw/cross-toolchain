@@ -49,6 +49,20 @@ readonly SPARSE_MNT=/Volumes/capsule8-xtools
 readonly SYSROOT_OUT="${SPARSE_MNT}/_phase1-real-sysroot"
 readonly RPM_CACHE="${SPARSE_MNT}/_phase1-rpm-cache"
 
+default_docker_platform() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo linux/amd64 ;;
+        arm64|aarch64) echo linux/arm64 ;;
+        *) echo "" ;;
+    esac
+}
+
+readonly DOCKER_PLATFORM="${DOCKER_PLATFORM:-$(default_docker_platform)}"
+DOCKER_PLATFORM_ARGS=()
+if [[ -n "${DOCKER_PLATFORM}" ]]; then
+    DOCKER_PLATFORM_ARGS=(--platform="${DOCKER_PLATFORM}")
+fi
+
 # ---- Sanity ----
 if [[ ! -d "${SPARSE_MNT}" ]]; then
     echo "ERROR: ${SPARSE_MNT} 沒 mount。先跑 host-cs-volume.sh 開 sparseimage" >&2
@@ -76,7 +90,7 @@ ls -lh "${RPM_CACHE}/"*.rpm
 echo
 echo "=== Step 2: extract RPMs into ${SYSROOT_OUT} ==="
 docker run --rm \
-    --platform=linux/arm64 \
+    "${DOCKER_PLATFORM_ARGS[@]}" \
     -v "${RPM_CACHE}:/rpms:ro" \
     -v "${SYSROOT_OUT}:/sysroot" \
     ubuntu:24.04 \

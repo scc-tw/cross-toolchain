@@ -10,15 +10,15 @@
 #   - Dockerfile is ~1/4 the length (no sed/awk gymnastics)
 #
 # Workflow matches Phase 1 (shares the entrypoint script docker-build-target.sh):
-#   docker build --platform=linux/arm64 -t finalfantasyliu/cross-toolbox:phase2 \
+#   docker build --platform=linux/amd64 -t finalfantasyliu/cross-toolbox:phase2 \
 #                -f toolchain/Dockerfile.phase2 toolchain/
-#   docker run --rm --platform=linux/arm64 \
+#   docker run --rm --platform=linux/amd64 \
 #       -v /Volumes/capsule8-xtools:/opt/x-tools \
 #       -v "$PWD/_logs:/build" \
 #       finalfantasyliu/cross-toolbox:phase2 \
 #       aarch64-centos7-glibc217-gcc15
 
-FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \

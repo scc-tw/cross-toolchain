@@ -7,10 +7,8 @@
 # Phase 4 vs Phase 2:
 #   - Same ct-ng 1.28, same versions, same Dockerfile structure
 #   - Only difference: target arch is x86_64 instead of aarch64
-#   - Same builder host platform (--platform=linux/arm64) → cross-gcc binary
-#     itself is arm64 ELF that emits x86_64 Linux ELF. Pairs with Phase 2's
-#     aarch64-host/aarch64-target gcc → both run natively in the
-#     cross-toolchain:latest image (arm64).
+#   - Same builder host platform as the final image → cross-gcc binaries run
+#     natively in cross-toolchain:latest while emitting target Linux ELFs.
 #
 # Phase 4 vs Phase 1 (also x86_64 Linux target):
 #   - Phase 1: CentOS 6 era (glibc 2.12, kernel 2.6.32, multilib, ct-ng 1.25 + backports)
@@ -21,15 +19,15 @@
 #     glibc symbols newer than 2.12).
 #
 # Workflow matches Phase 1/2 (shares scripts/docker/container/docker-build-target.sh):
-#   docker build --platform=linux/arm64 -t finalfantasyliu/cross-toolbox:phase4 \
+#   docker build --platform=linux/amd64 -t finalfantasyliu/cross-toolbox:phase4 \
 #                -f toolchain/Dockerfile.phase4 toolchain/
-#   docker run --rm --platform=linux/arm64 \
+#   docker run --rm --platform=linux/amd64 \
 #       -v /Volumes/capsule8-xtools:/opt/x-tools \
 #       -v "$PWD/_logs:/build" \
 #       finalfantasyliu/cross-toolbox:phase4 \
 #       x86_64-centos7-glibc217-gcc15
 
-FROM --platform=linux/arm64 ubuntu:24.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 

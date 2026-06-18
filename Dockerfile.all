@@ -65,11 +65,12 @@
 #   Go 1.22                     ~250 MB
 #   gosu/sudo                   <5 MB
 
-FROM --platform=linux/arm64 ubuntu:24.04
+FROM ubuntu:24.04
 
-# Run RUN commands under bash with: bashism ([[ ]]) + -e (any error fails) +
-# pipefail (failure mid-pipe also fails). pipefail follows hadolint DL4006:
-# avoids `cmd | tee log` succeeding silently when cmd fails but tee returns 0.
+ARG TARGETARCH
+
+# Docker/BuildKit honors this shell setting. Keep RUN snippets POSIX-compatible
+# because OCI builders such as buildah may ignore SHELL for OCI image output.
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 # OCI image metadata (org.opencontainers.image.* is the industry-standard namespace).
@@ -129,12 +130,13 @@ RUN userdel -r ubuntu 2>/dev/null || true && \
 # cherry-pick UAPI headers + extras-compat.h + pre-built libbpf.a (master HEAD).
 # This lets a Phase 1 binary statically link libbpf without touching Phase 1's
 # read-only sysroot. Final binary's GLIBC ABI floor is preserved at 2.12.
+ARG DIST_BASE=dist
 COPY --chown=dev:users \
-    dist/x86_64-centos6-linux-gnu.tar.xz \
-    dist/x86_64-centos7-linux-gnu.tar.xz \
-    dist/aarch64-centos7-linux-gnu.tar.xz \
-    dist/osxcross-MacOSX11.3.tar.xz \
-    dist/x86_64-centos6-extras.tar.xz \
+    ${DIST_BASE}/${TARGETARCH}/x86_64-centos6-linux-gnu.tar.xz \
+    ${DIST_BASE}/${TARGETARCH}/x86_64-centos7-linux-gnu.tar.xz \
+    ${DIST_BASE}/${TARGETARCH}/aarch64-centos7-linux-gnu.tar.xz \
+    ${DIST_BASE}/${TARGETARCH}/osxcross-MacOSX11.3.tar.xz \
+    ${DIST_BASE}/${TARGETARCH}/x86_64-centos6-extras.tar.xz \
     /tmp/
 
 WORKDIR /tmp
@@ -156,10 +158,10 @@ RUN set -eux; \
     \
     # Sanity: each toolchain reports a version string
     echo "=== verifying toolchains ==="; \
-    /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-gcc --version | head -1; \
-    /opt/x-tools/x86_64-centos7-linux-gnu/bin/x86_64-centos7-linux-gnu-gcc --version | head -1; \
-    /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-gcc --version | head -1; \
-    /opt/osxcross/bin/x86_64-apple-darwin20.4-clang --version | head -1; \
+    /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-gcc --version; \
+    /opt/x-tools/x86_64-centos7-linux-gnu/bin/x86_64-centos7-linux-gnu-gcc --version; \
+    /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-gcc --version; \
+    /opt/osxcross/bin/x86_64-apple-darwin20.4-clang --version; \
     \
     # Sanity: extras layout
     echo "=== verifying Phase 1 extras ==="; \
@@ -169,30 +171,34 @@ RUN set -eux; \
     ls -lh /opt/x-tools-extras/x86_64-centos6-extras/lib64/*.a
 
 # Install Go 1.22.12 (last Go version covering both CentOS 6 + macOS 10.15).
-# Image base is linux/arm64, so download the arm64 Go tarball.
 # SHA256 from https://go.dev/dl/?mode=json&include=all
 ARG GO_VERSION=1.22.12
+ARG GO_SHA256_AMD64=4fa4f869b0f7fc6bb1eb2660e74657fbf04cdd290b5aef905585c86051b34d43
 ARG GO_SHA256_ARM64=fd017e647ec28525e86ae8203236e0653242722a7436929b1f775744e26278e7
 RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) GO_ARCH=amd64; GO_SHA256="${GO_SHA256_AMD64}" ;; \
+        arm64) GO_ARCH=arm64; GO_SHA256="${GO_SHA256_ARM64}" ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}; expected amd64 or arm64" >&2; exit 1 ;; \
+    esac; \
     cd /tmp; \
-    curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz"; \
-    echo "${GO_SHA256_ARM64}  go${GO_VERSION}.linux-arm64.tar.gz" | sha256sum -c -; \
-    tar -C /usr/local -xzf "go${GO_VERSION}.linux-arm64.tar.gz"; \
+    curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"; \
+    echo "${GO_SHA256}  go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" | sha256sum -c -; \
+    tar -C /usr/local -xzf "go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"; \
     rm -f /tmp/go*.tar.gz; \
     /usr/local/go/bin/go version
 
 # Autotools-friendly symlinks. autoconf's config.sub recognizes
 # aarch64-linux-gnu / x86_64-linux-gnu, but not -centos6/-centos7. These
 # alias links let `./configure --host=aarch64-linux-gnu` work.
-# Uses [[ ]] because SHELL is set to bash above.
 RUN set -eux; \
     cd /usr/local/bin; \
     for tool in gcc g++ ar ranlib strip ld nm objcopy objdump readelf addr2line c++ cc cpp gcov; do \
-        if [[ -x /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-${tool} ]]; then \
+        if [ -x /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-${tool} ]; then \
             ln -sf /opt/x-tools/x86_64-centos6-linux-gnu/bin/x86_64-centos6-linux-gnu-${tool} \
                 x86_64-linux-gnu-${tool}; \
         fi; \
-        if [[ -x /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-${tool} ]]; then \
+        if [ -x /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-${tool} ]; then \
             ln -sf /opt/x-tools/aarch64-centos7-linux-gnu/bin/aarch64-centos7-linux-gnu-${tool} \
                 aarch64-linux-gnu-${tool}; \
         fi; \

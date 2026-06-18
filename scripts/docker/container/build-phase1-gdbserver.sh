@@ -11,7 +11,7 @@
 #   觸發 -m32 sub-build → 不撞 RAX 衝突。
 #
 # 怎麼用:
-#   docker run --rm --platform=linux/arm64 \
+#   docker run --rm --platform=<builder-platform> \
 #       -v /Volumes/capsule8-xtools:/opt/x-tools \
 #       -v "$PWD/_logs:/build" \
 #       -v "$PWD/scripts/docker/container:/scripts:ro" \

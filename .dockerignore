@@ -1,0 +1,11 @@
+.git/
+.claude/
+_logs/
+_out/
+last-build-logs*/
+sources/
+smoke-test/out/
+smoke-test/leveldb/
+smoke-test/src/
+smoke-test/sqlite.zip
+smoke-test/*.tar.gz

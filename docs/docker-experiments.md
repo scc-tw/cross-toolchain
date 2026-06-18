@@ -1629,7 +1629,7 @@ osxcross 跟 ct-ng 不同——**它本身就是 cross-toolchain，沒 ct-ng 那
 
 所以 phase3 image 的兩種使用模式：
 - **A. 當 builder image**：user docker run 進來，掛 source code，編 macOS binary 出來
-- **B. 拷出來 archive**：`docker run --rm cross-toolbox:phase3 tar -cJf - -C /opt/osxcross . > dist/osxcross-MacOSX11.3.tar.xz`
+- **B. 拷出來 archive**：`docker run --rm --entrypoint /usr/bin/tar cross-toolbox:phase3 -cf - -C /opt osxcross | xz -T0 -c > dist/osxcross-MacOSX11.3.tar.xz`
 
 我兩個都支援：ENTRYPOINT 是 `bash`（A 用），順帶寫個 helper script 包 archive（B 用）。
 

@@ -112,7 +112,23 @@ For maximum reproducibility, pin to the image digest rather than a tag:
 docker pull leavevm0cl6/cross-toolchain@sha256:f024f9207ad7...
 ```
 
-Both images target `linux/arm64` at present. They run natively on Apple Silicon hosts and via QEMU/binfmt on Linux x86_64 hosts.
+The Dockerfiles support `linux/amd64` and `linux/arm64`. Keep the phase artifacts and final image on the same platform: a `linux/amd64` final image needs `linux/amd64` phase tarballs, while a `linux/arm64` final image needs `linux/arm64` phase tarballs. Artifacts are split by Docker's `TARGETARCH` value:
+
+```text
+dist/
+  amd64/
+    x86_64-centos6-linux-gnu.tar.xz
+    x86_64-centos7-linux-gnu.tar.xz
+    aarch64-centos7-linux-gnu.tar.xz
+    osxcross-MacOSX11.3.tar.xz
+    x86_64-centos6-extras.tar.xz
+  arm64/
+    x86_64-centos6-linux-gnu.tar.xz
+    x86_64-centos7-linux-gnu.tar.xz
+    aarch64-centos7-linux-gnu.tar.xz
+    osxcross-MacOSX11.3.tar.xz
+    x86_64-centos6-extras.tar.xz
+```
 
 
 ## Building the image yourself
@@ -129,6 +145,55 @@ Dockerfile.ebpf-builder   Companion image: clang-19, bpftool, and libbpf headers
 ```
 
 Phase 1, 2, and 4 are builder images. Running `docker build` on each produces an image that, when invoked with `docker run`, executes `crosstool-ng` and emits a toolchain tarball into a mounted volume. Phase 3 builds osxcross directly inside its image. Phase 1 additionally requires CentOS 6 RPM artifacts for its gdbserver build; the helper script is at `scripts/docker/host/prepare-centos6-real-sysroot.sh`.
+
+To build an x86_64-host final image on Linux x86_64, build every phase with `linux/amd64` and put the resulting tarballs under `dist/amd64`:
+
+```bash
+export PLATFORM=linux/amd64
+export TARGETARCH=amd64
+export DIST_DIR=dist/${TARGETARCH}
+
+mkdir -p _out _logs "${DIST_DIR}"
+
+docker build --platform="${PLATFORM}" -t cross-toolbox:phase1-amd64 -f Dockerfile.phase1 .
+docker build --platform="${PLATFORM}" -t cross-toolbox:phase2-amd64 -f Dockerfile.phase2 .
+docker build --platform="${PLATFORM}" -t cross-toolbox:phase3-amd64 -f Dockerfile.phase3 .
+docker build --platform="${PLATFORM}" -t cross-toolbox:phase4-amd64 -f Dockerfile.phase4 .
+
+docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase1-amd64 x86_64-centos6-glibc212-gcc15
+docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase2-amd64 aarch64-centos7-glibc217-gcc15
+docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase4-amd64 x86_64-centos7-glibc217-gcc15
+
+tar -cJf "${DIST_DIR}/x86_64-centos6-linux-gnu.tar.xz" -C _out x86_64-centos6-linux-gnu
+tar -cJf "${DIST_DIR}/aarch64-centos7-linux-gnu.tar.xz" -C _out aarch64-centos7-linux-gnu
+tar -cJf "${DIST_DIR}/x86_64-centos7-linux-gnu.tar.xz" -C _out x86_64-centos7-linux-gnu
+docker run --rm --platform="${PLATFORM}" --entrypoint /usr/bin/tar cross-toolbox:phase3-amd64 \
+    -cf - -C /opt osxcross | xz -T0 -c > "${DIST_DIR}/osxcross-MacOSX11.3.tar.xz"
+
+# Also place x86_64-centos6-extras.tar.xz in ${DIST_DIR}; it is required by Dockerfile.all.
+docker build --platform="${PLATFORM}" -t leavevm0cl6/cross-toolchain:amd64 -f Dockerfile.all .
+```
+
+To build the ARM64-host variant, use `PLATFORM=linux/arm64`, `TARGETARCH=arm64`, and `DIST_DIR=dist/arm64`. Do not reuse `linux/arm64` phase tarballs when building `linux/amd64`; the final image verification will fail with `Exec format error` because the embedded host tools are the wrong architecture.
+
+`docker buildx` supports platform matrix builds. Once both `dist/amd64` and `dist/arm64` contain matching artifacts, the final image can be published as one multi-arch tag:
+
+```bash
+docker buildx build \
+    --platform=linux/amd64,linux/arm64 \
+    -t leavevm0cl6/cross-toolchain:1.0 \
+    -t leavevm0cl6/cross-toolchain:latest \
+    --push \
+    -f Dockerfile.all .
+```
+
+The same platform matrix is available through `docker-bake.hcl`:
+
+```bash
+docker buildx bake --push cross-toolchain
+```
+
+The phase images can also be built with buildx, but the phase `docker run` steps that generate tarballs still need to run once per platform, either as a shell loop or as a CI matrix.
 
 Detailed build instructions, including the GCC 15 backport patches and macOS 26 host fixes, live in:
 

@@ -10,7 +10,7 @@
 # Usage (from host):
 #   mkdir -p _out _logs
 #   docker run --rm \
-#     --platform=linux/arm64 \
+#     --platform=<builder-platform> \
 #     -v "$PWD/_out:/opt/x-tools" \
 #     -v "$PWD/_logs:/build" \
 #     finalfantasyliu/cross-toolbox:phase1 \
