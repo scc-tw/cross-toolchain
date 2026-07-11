@@ -14,7 +14,7 @@
 #     -v "$PWD/_out:/opt/x-tools" \
 #     -v "$PWD/_logs:/build" \
 #     finalfantasyliu/cross-toolbox:phase1 \
-#     x86_64-centos6-glibc212-gcc15
+#     x86_64-centos6-glibc212-gcc16
 #
 # On failure:
 #   - _logs/build.log (real ct-ng log, copied from container)
@@ -29,7 +29,7 @@
 #      final COPY layer)
 #   3. inspect _logs/build.log on failure
 #   4. if source patch needed, drop in
-#      patches/ct-ng-1.25-gcc15-backport/packages/<pkg>/<ver>/
+#      patches/ct-ng-gcc16-backport/packages/<pkg>/<ver>/
 
 set -euxo pipefail
 # pipefail: with `cmd | tee log`, ensure cmd's failure propagates.

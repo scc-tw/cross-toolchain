@@ -1,6 +1,6 @@
 # Phase 2 副軸：ct-ng 1.28 native → aarch64-centos7-linux-gnu
-# kernel 3.10.108 / glibc 2.17 / GCC 15.2.0 / binutils 2.42 / GDB 16.3
-# 無 backport，所有版本 ct-ng 1.28 ship 內。
+# kernel 3.10.108 / glibc 2.17 / GCC 16.1.0 / binutils 2.42 / GDB 16.3
+# GCC 16 is backported from crosstool-NG upstream.
 
 # === Architecture ===
 # kconfig case-sensitive！ARM 大寫，不是 arm。寫錯 ct-ng 不認，silently fallback
@@ -26,13 +26,18 @@ CT_BINUTILS_V_2_42=y
 CT_BINUTILS_VERSION="2.42"
 
 # === GCC ===
-CT_GCC_V_15=y
-CT_GCC_VERSION="15.2.0"
+CT_GCC_V_16=y
+CT_GCC_VERSION="16.1.0"
 CT_CC_LANG_CXX=y
 CT_CC_GCC_LIBQUADMATH=y
 CT_CC_GCC_LIBGOMP=y
 CT_CC_GCC_LIBSANITIZER=n
 CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"
+
+# glibc 2.17 has K&R declarations that GCC 16 no longer accepts under its
+# default C23 dialect. Keep the libc build on GNU C17 and silence known legacy
+# diagnostics, matching the upstream crosstool-NG GCC 16 default.
+CT_GLIBC_EXTRA_CFLAGS="-Wno-missing-attributes -Wno-array-bounds -Wno-array-parameter -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-implicit-int -std=gnu17"
 
 # === GDB ===
 # CT_DEBUG_GDB 是 menuconfig 主開關（kconfig 用 menuconfig 而不是 config 表示有子選項）

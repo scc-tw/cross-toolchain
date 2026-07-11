@@ -15,7 +15,7 @@ This repository contains the Dockerfiles, build configurations, and patches that
 [![Docker Pulls](https://img.shields.io/docker/pulls/leavevm0cl6/cross-toolchain.svg?logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain)
 [![Image Size](https://img.shields.io/docker/image-size/leavevm0cl6/cross-toolchain/latest?logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain)
 [![Image Version](https://img.shields.io/docker/v/leavevm0cl6/cross-toolchain?sort=semver&logo=docker&logoColor=white&color=2496ED)](https://hub.docker.com/r/leavevm0cl6/cross-toolchain/tags)
-[![GCC](https://img.shields.io/badge/GCC-15.2.0-FF6F00?logo=gnu&logoColor=white)](https://gcc.gnu.org/gcc-15/)
+[![GCC](https://img.shields.io/badge/GCC-16.1.0-FF6F00?logo=gnu&logoColor=white)](https://gcc.gnu.org/gcc-16/)
 [![Clang](https://img.shields.io/badge/Clang-18-262D3A?logo=llvm&logoColor=white)](https://releases.llvm.org/18.1.0/tools/clang/docs/ReleaseNotes.html)
 [![Go](https://img.shields.io/badge/Go-1.22.12-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/devel/release#go1.22.minor)
 
@@ -56,9 +56,9 @@ Inside the container, `cross-toolchain-help` displays the full reference for too
 
 | Triple | Compiler | Target glibc | Target kernel | Deploy floor |
 |---|---|---|---|---|
-| `x86_64-centos6-linux-gnu` | gcc 15.2.0 | 2.12 | 2.6.32 | CentOS 6, RHEL 6, modern Linux (multilib enabled) |
-| `x86_64-centos7-linux-gnu` | gcc 15.2.0 | 2.17 | 3.10.108 | CentOS 7+, RHEL 8+, Ubuntu 18.04+ |
-| `aarch64-centos7-linux-gnu` | gcc 15.2.0 | 2.17 | 3.10.108 | CentOS 7+/RHEL 8+ on ARM64 |
+| `x86_64-centos6-linux-gnu` | gcc 16.1.0 | 2.12 | 2.6.32 | CentOS 6, RHEL 6, modern Linux (multilib enabled) |
+| `x86_64-centos7-linux-gnu` | gcc 16.1.0 | 2.17 | 3.10.108 | CentOS 7+, RHEL 8+, Ubuntu 18.04+ |
+| `aarch64-centos7-linux-gnu` | gcc 16.1.0 | 2.17 | 3.10.108 | CentOS 7+/RHEL 8+ on ARM64 |
 | `x86_64-apple-darwin20.4` | clang 18 (osxcross) + SDK 11.3 | n/a (libSystem) | Darwin 20.4 | macOS Intel 10.15 onward |
 | `arm64-apple-darwin20.4` | clang 18 (osxcross) + SDK 11.3 | n/a (libSystem) | Darwin 20.4 | macOS Apple Silicon 11.0 onward |
 
@@ -136,10 +136,10 @@ dist/
 The image is produced in four phases that run independently, then a final compositor stage assembles them. Each phase has its own Dockerfile at the repository root:
 
 ```
-Dockerfile.phase1         x86_64-centos6-linux-gnu (ct-ng 1.25 with GCC 15 backport, glibc 2.12)
-Dockerfile.phase2         aarch64-centos7-linux-gnu (ct-ng 1.28 native, glibc 2.17)
+Dockerfile.phase1         x86_64-centos6-linux-gnu (ct-ng 1.25 with GCC 16 backport, glibc 2.12)
+Dockerfile.phase2         aarch64-centos7-linux-gnu (ct-ng 1.28 with GCC 16 backport, glibc 2.17)
 Dockerfile.phase3         osxcross with macOS SDK 11.3 (Intel and Apple Silicon)
-Dockerfile.phase4         x86_64-centos7-linux-gnu (ct-ng 1.28 native, glibc 2.17)
+Dockerfile.phase4         x86_64-centos7-linux-gnu (ct-ng 1.28 with GCC 16 backport, glibc 2.17)
 Dockerfile.all            Final consumer image, combines all four phases plus Go and libbpf extras
 Dockerfile.ebpf-builder   Companion image: clang-19, bpftool, and libbpf headers
 ```
@@ -160,9 +160,9 @@ docker build --platform="${PLATFORM}" -t cross-toolbox:phase2-amd64 -f Dockerfil
 docker build --platform="${PLATFORM}" -t cross-toolbox:phase3-amd64 -f Dockerfile.phase3 .
 docker build --platform="${PLATFORM}" -t cross-toolbox:phase4-amd64 -f Dockerfile.phase4 .
 
-docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase1-amd64 x86_64-centos6-glibc212-gcc15
-docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase2-amd64 aarch64-centos7-glibc217-gcc15
-docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase4-amd64 x86_64-centos7-glibc217-gcc15
+docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase1-amd64 x86_64-centos6-glibc212-gcc16
+docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase2-amd64 aarch64-centos7-glibc217-gcc16
+docker run --rm --platform="${PLATFORM}" -v "$PWD/_out:/opt/x-tools" -v "$PWD/_logs:/build" cross-toolbox:phase4-amd64 x86_64-centos7-glibc217-gcc16
 
 tar -cJf "${DIST_DIR}/x86_64-centos6-linux-gnu.tar.xz" -C _out x86_64-centos6-linux-gnu
 tar -cJf "${DIST_DIR}/aarch64-centos7-linux-gnu.tar.xz" -C _out aarch64-centos7-linux-gnu
@@ -195,7 +195,7 @@ docker buildx bake --push cross-toolchain
 
 The phase images can also be built with buildx, but the phase `docker run` steps that generate tarballs still need to run once per platform, either as a shell loop or as a CI matrix.
 
-Detailed build instructions, including the GCC 15 backport patches and macOS 26 host fixes, live in:
+Detailed build instructions, including the GCC 15 compatibility patches, GCC 16 backport, and macOS 26 host fixes, live in:
 
 - [docs/crosstool-ng-explained.md](./docs/crosstool-ng-explained.md), the internal mechanics of crosstool-ng (Chinese, ~118 KB)
 - [docs/docker-experiments.md](./docs/docker-experiments.md), the phase-by-phase Docker build journal (Chinese, ~219 KB)
@@ -271,7 +271,7 @@ This is the same approach `auditwheel` takes for Python wheels.
 
 ## Contributing
 
-Bug reports and patches are welcome via GitHub issues and pull requests. Patches that touch the GCC 15 backport for crosstool-ng 1.25 should preserve the structure documented in [docs/crosstool-ng-explained.md](./docs/crosstool-ng-explained.md).
+Bug reports and patches are welcome via GitHub issues and pull requests. Patches that touch the GCC 16 backport or GCC 15 compatibility patches for crosstool-ng 1.25 should preserve the structure documented in [docs/crosstool-ng-explained.md](./docs/crosstool-ng-explained.md).
 
 
 ## License

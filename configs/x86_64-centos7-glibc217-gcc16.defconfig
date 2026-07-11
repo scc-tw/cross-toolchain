@@ -1,7 +1,7 @@
 # Phase 4: ct-ng 1.28 native -> x86_64-centos7-linux-gnu
-# kernel 3.10.108 / glibc 2.17 / GCC 15.2.0 / binutils 2.42 / GDB 16.3
+# kernel 3.10.108 / glibc 2.17 / GCC 16.1.0 / binutils 2.42 / GDB 16.3
 # Mirror of Phase 2 with arch flipped from aarch64 to x86_64.
-# Pairs with aarch64-centos7-glibc217-gcc15 to give two-arch CentOS 7+/RHEL 8+ deploy.
+# Pairs with aarch64-centos7-glibc217-gcc16 to give two-arch CentOS 7+/RHEL 8+ deploy.
 
 # === Architecture ===
 # kconfig is case-sensitive: X86 must be uppercase. Wrong case silently
@@ -34,13 +34,18 @@ CT_BINUTILS_V_2_42=y
 CT_BINUTILS_VERSION="2.42"
 
 # === GCC ===
-CT_GCC_V_15=y
-CT_GCC_VERSION="15.2.0"
+CT_GCC_V_16=y
+CT_GCC_VERSION="16.1.0"
 CT_CC_LANG_CXX=y
 CT_CC_GCC_LIBQUADMATH=y
 CT_CC_GCC_LIBGOMP=y
 CT_CC_GCC_LIBSANITIZER=n
 CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"
+
+# glibc 2.17 has K&R declarations that GCC 16 no longer accepts under its
+# default C23 dialect. Keep the libc build on GNU C17 and silence known legacy
+# diagnostics, matching the upstream crosstool-NG GCC 16 default.
+CT_GLIBC_EXTRA_CFLAGS="-Wno-missing-attributes -Wno-array-bounds -Wno-array-parameter -Wno-stringop-overflow -Wno-maybe-uninitialized -Wno-implicit-int -std=gnu17"
 
 # === GDB ===
 # CT_DEBUG_GDB is the menuconfig master switch. Without it all CT_GDB_*

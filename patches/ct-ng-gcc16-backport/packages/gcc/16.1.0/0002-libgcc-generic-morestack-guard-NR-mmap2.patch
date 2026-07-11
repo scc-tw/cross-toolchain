@@ -1,0 +1,18 @@
+Tighten SYS_mmap2 detection in libgcc/generic-morestack.c for glibc 2.12.
+
+glibc 2.12 x86_64 defines SYS_mmap2 as __NR_mmap2 without defining the
+underlying syscall number. GCC's split-stack implementation must therefore
+use the mmap2 path only when both macros are available.
+
+--- a/libgcc/generic-morestack.c
++++ b/libgcc/generic-morestack.c
+@@ -69,1 +69,2 @@
+-#if defined(SYS_mmap) || defined(SYS_mmap2)
++/* glibc 2.12 x86_64 defines SYS_mmap2 without defining __NR_mmap2.  */
++#if defined(SYS_mmap) || (defined(SYS_mmap2) && defined(__NR_mmap2))
+@@ -71,1 +72,1 @@
+-#ifdef SYS_mmap2
++#if defined(SYS_mmap2) && defined(__NR_mmap2)
+ #define MORESTACK_MMAP SYS_mmap2
+ #define MORESTACK_ADJUST_OFFSET(x) ((x) / 4096ULL)
+ #else

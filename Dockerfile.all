@@ -6,9 +6,9 @@
 # Naming convention follows survey of dockcross + multiarch/crossbuild (5/9).
 #
 # Targets baked in:
-#   - x86_64-centos6-linux-gnu  (CentOS 6+ Intel,    glibc 2.12, GCC 15.2, multilib)
-#   - x86_64-centos7-linux-gnu  (CentOS 7+ Intel,    glibc 2.17, GCC 15.2)
-#   - aarch64-centos7-linux-gnu (CentOS 7+ ARM64,    glibc 2.17, GCC 15.2)
+#   - x86_64-centos6-linux-gnu  (CentOS 6+ Intel,    glibc 2.12, GCC 16.1, multilib)
+#   - x86_64-centos7-linux-gnu  (CentOS 7+ Intel,    glibc 2.17, GCC 16.1)
+#   - aarch64-centos7-linux-gnu (CentOS 7+ ARM64,    glibc 2.17, GCC 16.1)
 #   - x86_64-apple-darwin20.4   (macOS 10.15+ Intel, clang 18 + SDK 11.3)
 #   - arm64-apple-darwin20.4    (macOS 11.0+ Apple Silicon, clang 18 + SDK 11.3)
 #
@@ -283,9 +283,9 @@ printf "${C}==           finalfantasyliu/cross-toolchain  v1.0            ==${R}
 printf "${C}================================================================${R}\n\n"
 
 printf "  ${B}Linux targets${R}\n"
-printf "    x86_64-centos6-linux-gnu     ${D}gcc 15.2.0   glibc 2.12   ct-ng 1.25   multilib${R}\n"
-printf "    x86_64-centos7-linux-gnu     ${D}gcc 15.2.0   glibc 2.17   ct-ng 1.28${R}\n"
-printf "    aarch64-centos7-linux-gnu    ${D}gcc 15.2.0   glibc 2.17   ct-ng 1.28${R}\n\n"
+printf "    x86_64-centos6-linux-gnu     ${D}gcc 16.1.0   glibc 2.12   ct-ng 1.25   multilib${R}\n"
+printf "    x86_64-centos7-linux-gnu     ${D}gcc 16.1.0   glibc 2.17   ct-ng 1.28${R}\n"
+printf "    aarch64-centos7-linux-gnu    ${D}gcc 16.1.0   glibc 2.17   ct-ng 1.28${R}\n\n"
 
 printf "  ${B}macOS targets${R}\n"
 printf "    x86_64-apple-darwin20.4      ${D}clang 18     SDK 11.3     osxcross   deploy 10.15+${R}\n"

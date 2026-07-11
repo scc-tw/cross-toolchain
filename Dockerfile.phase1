@@ -1,22 +1,22 @@
 # capsule8 cross-toolchain builder image — Phase 1
 #
 # Phase 1 (this file):
-#   Build ct-ng 1.25 from source + backport GCC 15.2.0 metadata
-#   → produce x86_64-centos6-linux-gnu (glibc 2.12.1 + GCC 15.2.0)
+#   Build ct-ng 1.25 from source + backport GCC 16.1.0 metadata
+#   → produce x86_64-centos6-linux-gnu (glibc 2.12.1 + GCC 16.1.0)
 #   With MULTILIB: x86_64 (default) + i686 (-m32) sysroots both built.
 #   A post-build header overlay keeps -m64 on 64-bit glibc headers while -m32
 #   keeps using 32-bit glibc headers.
 #
 # Phase 2 (separate file: Dockerfile.phase2):
 #   ct-ng 1.28 native (no backport) → aarch64-centos7-linux-gnu
-#   (glibc 2.17 + GCC 15.2.0)
+#   (glibc 2.17 + GCC 16.1.0)
 #
 # Phase 3 (separate file: Dockerfile.phase3):
 #   osxcross + MacOSX11.3.sdk
 #   → x86_64-apple-darwin20.4 + arm64-apple-darwin20.4
 #
 # Phase 4 (separate file: Dockerfile.phase4):
-#   ct-ng 1.28 native → x86_64-centos7-linux-gnu (glibc 2.17 + GCC 15.2.0)
+#   ct-ng 1.28 + GCC 16 backport → x86_64-centos7-linux-gnu (glibc 2.17 + GCC 16.1.0)
 #   Pairs with Phase 2 for CentOS 7+/RHEL 8+ deploy on both archs.
 #
 # Final consumer image: Dockerfile.all (combines all 4 phases + Go + Phase 1 extras)
@@ -35,7 +35,7 @@
 #         -v "$PWD/_out:/opt/x-tools" \
 #         -v "$PWD/_logs:/build" \
 #         finalfantasyliu/cross-toolbox:phase1 \
-#         x86_64-centos6-glibc212-gcc15
+#         x86_64-centos6-glibc212-gcc16
 #
 #   ③ Iterate: tweak defconfig in configs/ + re-run step ②.
 #      defconfigs / patches are baked into the image so you DO need to rebuild
@@ -136,6 +136,7 @@ RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
 # -----------------------------------------------------------------------------
 COPY --chown=ctuser:ctuser vendor/ct-ng-1.25.0-release.tar.xz /tmp/
 COPY --chown=ctuser:ctuser patches/ct-ng-1.25-gcc15-backport/ /tmp/gcc15-backport/
+COPY --chown=ctuser:ctuser patches/ct-ng-gcc16-backport/ /tmp/gcc16-backport/
 COPY --chown=ctuser:ctuser patches/glibc-2.12.1-x86_64-multilib-sysroot/ /opt/glibc-2.12.1-x86_64-multilib-sysroot/
 
 # All defconfigs (baked into image; defconfig name passed at docker run time)
@@ -145,7 +146,7 @@ USER ctuser
 WORKDIR /tmp
 
 # -----------------------------------------------------------------------------
-# Build ct-ng 1.25 from source + apply GCC 15 backport.
+# Build ct-ng 1.25 from source + apply GCC 16 backport.
 #
 # Why from source (not brew / apt):
 #   - Ubuntu's ct-ng package is too old / mismatched
@@ -153,11 +154,11 @@ WORKDIR /tmp
 #     6d5227b removed it)
 #   - Building from source lets us patch its packages/ tree before installing
 #
-# Backport steps (10-min mechanical work, two backports):
-#   GCC 15.2.0:
-#     1. Add packages/gcc/15.2.0/{chksum,version.desc}
-#     2. Append "15" to packages/gcc/package.desc milestones list
-#     3. Insert GCC_V_15 block into config/versions/gcc.in
+# Backport steps (GCC 15 is retained for compatibility; GCC 16 is selected):
+#   GCC 16.1.0:
+#     1. Add packages/gcc/16.1.0/{chksum,version.desc,patches}
+#     2. Append "16" to packages/gcc/package.desc milestones list
+#     3. Insert GCC_V_16 block into config/versions/gcc.in
 #   GDB 16.3:
 #     4. Add packages/gdb/16.3/{chksum,version.desc}
 #     5. Append "16" to packages/gdb/package.desc milestones list
@@ -168,9 +169,9 @@ RUN set -eux; \
     tar xJf ct-ng-1.25.0-release.tar.xz; \
     cd crosstool-ng-1.25.0; \
     \
-    ##### GCC 15.2.0 backport #####
-    # 1. Drop GCC 15.2.0 package metadata + (initially empty) patch dir
-    cp -r /tmp/gcc15-backport/packages/gcc/15.2.0 packages/gcc/; \
+    ##### GCC 16.1.0 backport #####
+    # 1. Drop GCC 16.1.0 package metadata and target-specific source patches.
+    cp -r /tmp/gcc16-backport/packages/gcc/16.1.0 packages/gcc/; \
     # Drop our self-written .patch files (if any) into ct-ng's package dirs.
     # ct-ng applies all numbered NNNN-*.patch in lexical order before build.
     # `cp -n` skips existing (won't overwrite ct-ng's bundled patches).
@@ -179,21 +180,16 @@ RUN set -eux; \
         -exec cp -n {} packages/glibc/2.12.1/ \; ; \
     find /tmp/gcc15-backport/packages/binutils/2.38 -maxdepth 1 -name '*.patch' \
         -exec cp -n {} packages/binutils/2.38/ \; ; \
-    # also catch any extra .patch files inside packages/gcc/15.2.0/ that we
-    # may add later (cp -r above already copied the dir, so this is a no-op
-    # unless we put .patch files at gcc15-backport top level — defensive)
-    find /tmp/gcc15-backport/packages/gcc/15.2.0 -maxdepth 1 -name '*.patch' \
-        -exec cp -n {} packages/gcc/15.2.0/ \; 2>/dev/null || true; \
     \
     # Verify our rtld.c patch landed (Error #8 backport) — fail-fast if not
     test -f packages/glibc/2.12.1/0001-tls-x86_64-fix-imm-mode-movq-gcc15.patch; \
     \
-    # 2. milestones += 15
-    sed -i "s|^milestones='4.9 5 6 7 8 9 10 11'|milestones='4.9 5 6 7 8 9 10 11 15'|" \
+    # 2. milestones += 15, 16
+    sed -i "s|^milestones='4.9 5 6 7 8 9 10 11'|milestones='4.9 5 6 7 8 9 10 11 15 16'|" \
         packages/gcc/package.desc; \
-    grep -q "milestones='4.9 5 6 7 8 9 10 11 15'" packages/gcc/package.desc; \
+    grep -q "milestones='4.9 5 6 7 8 9 10 11 15 16'" packages/gcc/package.desc; \
     \
-    # 3. config/versions/gcc.in — insert GCC_V_15 block before GCC_V_11
+    # 3. config/versions/gcc.in — insert GCC_V_16 and GCC_V_15 before GCC_V_11.
     # NOTE: select symbol is GCC_X_or_later (NOT CC_GCC_X_or_later) — that's the
     # symbol kconfig dependencies use elsewhere (e.g., CLOOG_NEEDED if !GCC_5_or_later).
     # Wrong prefix here means GCC_V_15 doesn't propagate "I'm GCC 5+", which causes
@@ -201,6 +197,18 @@ RUN set -eux; \
     # Error #6 for the diagnosis.
     awk '\
         /^config GCC_V_11$/ && !done { \
+            print "config GCC_V_16"; \
+            print "    bool"; \
+            print "    prompt \"16.1.0\""; \
+            print "    select GCC_4_9_or_later"; \
+            print "    select GCC_5_or_later"; \
+            print "    select GCC_6_or_later"; \
+            print "    select GCC_7_or_later"; \
+            print "    select GCC_8_or_later"; \
+            print "    select GCC_9_or_later"; \
+            print "    select GCC_10_or_later"; \
+            print "    select GCC_11_or_later"; \
+            print ""; \
             print "config GCC_V_15"; \
             print "    bool"; \
             print "    prompt \"15.2.0\""; \
@@ -215,13 +223,13 @@ RUN set -eux; \
             print ""; \
             done=1 \
         } \
-        /^    default n if GCC_V_11$/ { print "    default n if GCC_V_15" } \
-        /^    default \"11\.2\.0\" if GCC_V_11$/ { print "    default \"15.2.0\" if GCC_V_15" } \
+        /^    default n if GCC_V_11$/ { print "    default n if GCC_V_16"; print "    default n if GCC_V_15" } \
+        /^    default \"11\.2\.0\" if GCC_V_11$/ { print "    default \"16.1.0\" if GCC_V_16"; print "    default \"15.2.0\" if GCC_V_15" } \
         { print } \
     ' config/versions/gcc.in > config/versions/gcc.in.new; \
     mv config/versions/gcc.in.new config/versions/gcc.in; \
-    grep -q "GCC_V_15" config/versions/gcc.in; \
-    grep -q '"15.2.0" if GCC_V_15' config/versions/gcc.in; \
+    grep -q "GCC_V_16" config/versions/gcc.in; \
+    grep -q '"16.1.0" if GCC_V_16' config/versions/gcc.in; \
     grep -q "select GCC_5_or_later" config/versions/gcc.in; \
     \
     ##### GDB 16.3 backport #####
@@ -285,6 +293,20 @@ RUN set -eux; \
         scripts/build/cc/gcc.sh; \
     grep -q "all-libcpp all-build-libcpp" scripts/build/cc/gcc.sh; \
     \
+    # GCC 16's stage-1 configure probes libatomic before the target libc is
+    # available. Disable it here; the final compiler still builds libatomic.
+    awk '\
+        !done && /"\$\{extra_config\[@\]\}"/ { \
+            print; \
+            print "        --disable-libatomic                            " sprintf("%c", 92); \
+            done=1; \
+            next \
+        } \
+        { print } \
+    ' scripts/build/cc/gcc.sh > scripts/build/cc/gcc.sh.new; \
+    mv scripts/build/cc/gcc.sh.new scripts/build/cc/gcc.sh; \
+    grep -q -- '--disable-libatomic' scripts/build/cc/gcc.sh; \
+    \
     ##### Universal fix: zlib 1.2.12 mirror (sourceforge + zlib.net pulled the file) #####
     # zlib 1.2.12 (2022-03) had CVE-2022-37434 → upstream pulled the tarball
     # from both sourceforge and zlib.net root. Only zlib.net/fossils/ still
@@ -306,7 +328,7 @@ RUN set -eux; \
     \
     ##### Install our backport package dirs + patches into ct-ng's installed tree #####
     # ct-ng's Makefile.am has a HARDCODED list of packages/files to install.
-    # Our brand-new package dirs (gcc/15.2.0, gdb/16.3) are NOT in that list,
+    # Our brand-new package dirs (gcc/15.2.0, gcc/16.1.0, gdb/16.3) are NOT in that list,
     # so `make install` skips them entirely — even chksum / version.desc are
     # missing. For existing dirs (glibc/2.12.1), our extra .patch files also
     # get skipped because the hunk for that dir was generated when ct-ng
@@ -319,6 +341,7 @@ RUN set -eux; \
     INSTALLED=/opt/ct-ng-1.25/share/crosstool-ng/packages; \
     # Wholesale dirs (didn't exist in ct-ng 1.25 install at all)
     cp -r /tmp/gcc15-backport/packages/gcc/15.2.0 ${INSTALLED}/gcc/; \
+    cp -r /tmp/gcc16-backport/packages/gcc/16.1.0 ${INSTALLED}/gcc/; \
     cp -r /tmp/gcc15-backport/packages/gdb/16.3 ${INSTALLED}/gdb/; \
     # Existing dirs — only need to cp the *.patch files we added
     # (Docker RUN default shell is /bin/sh = dash; no `compgen`. Use plain
@@ -334,16 +357,18 @@ RUN set -eux; \
     test -f ${INSTALLED}/glibc/2.12.1/0003-nptl-Makefile-disable-cfi-in-pt-initfini-gcc15.patch; \
     test -f ${INSTALLED}/gcc/15.2.0/chksum; \
     test -f ${INSTALLED}/gcc/15.2.0/0001-libgcc-generic-morestack-guard-NR-mmap2.patch; \
+    test -f ${INSTALLED}/gcc/16.1.0/chksum; \
+    test -f ${INSTALLED}/gcc/16.1.0/0002-libgcc-generic-morestack-guard-NR-mmap2.patch; \
     test -f ${INSTALLED}/gdb/16.3/chksum; \
     \
     # cleanup source — keep image small
     cd /tmp; \
     rm -rf crosstool-ng-1.25.0 ct-ng-1.25.0-release.tar.xz; \
     \
-    # sanity: print ct-ng version + confirm both backports visible
+    # sanity: print ct-ng version + confirm GCC 16 metadata is visible
     /opt/ct-ng-1.25/bin/ct-ng version | head -1; \
-    /opt/ct-ng-1.25/bin/ct-ng list-versions GCC 2>/dev/null | grep -E "(11.2.0|15.2.0)" || \
-        echo "INFO: list-versions GCC didn't print 15.2.0 — defconfig will tell us if metadata is OK"; \
+    /opt/ct-ng-1.25/bin/ct-ng list-versions GCC 2>/dev/null | grep -E "(11.2.0|15.2.0|16.1.0)" || \
+        echo "INFO: list-versions GCC didn't print 16.1.0 — defconfig will tell us if metadata is OK"; \
     /opt/ct-ng-1.25/bin/ct-ng list-versions GDB 2>/dev/null | grep -E "(11.2|16.3)" || \
         echo "INFO: list-versions GDB didn't print 16.3 — same as above"
 

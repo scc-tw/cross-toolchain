@@ -24,6 +24,8 @@ vendor/MacOSX*.sdk.tar.xz
 # --- ct-ng / docker run output dirs ---
 _logs/
 _out/
+_logs-*/
+_out-*/
 last-build-logs*/
 gcc14-wrappers/
 

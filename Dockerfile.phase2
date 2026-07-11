@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 # capsule8 cross-toolchain builder image — Phase 2
 #
-# Phase 2: ct-ng 1.28 (no backport) → aarch64-centos7-linux-gnu
-#         glibc 2.17 + GCC 15.2.0 + kernel 3.10.108 + binutils 2.42 + gdb 16.3
+# Phase 2: ct-ng 1.28 + GCC 16 backport → aarch64-centos7-linux-gnu
+#         glibc 2.17 + GCC 16.1.0 + kernel 3.10.108 + binutils 2.42 + gdb 16.3
 #
 # Phase 2 vs Phase 1：
-#   - ct-ng 1.28 ships GCC 15 / GDB 16 / glibc 2.17 natively → 0 backport patches
+#   - ct-ng 1.28 ships GDB 16 / glibc 2.17; GCC 16 is backported from upstream
 #   - Target ARM64 → no multilib (aarch64 has no 32-bit counterpart)
 #   - Dockerfile is ~1/4 the length (no sed/awk gymnastics)
 #
@@ -16,7 +16,7 @@
 #       -v /Volumes/capsule8-xtools:/opt/x-tools \
 #       -v "$PWD/_logs:/build" \
 #       finalfantasyliu/cross-toolbox:phase2 \
-#       aarch64-centos7-glibc217-gcc15
+#       aarch64-centos7-glibc217-gcc16
 
 FROM ubuntu:24.04 AS builder
 
@@ -69,22 +69,26 @@ RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
     chown -R ctuser:ctuser /opt/x-tools /opt/ct-ng-1.28 /build
 
 COPY --chown=ctuser:ctuser vendor/ct-ng-1.28.0-release.tar.xz /tmp/
+COPY --chown=ctuser:ctuser patches/ct-ng-gcc16-backport/ /tmp/gcc16-backport/
 COPY --chown=ctuser:ctuser configs/ /configs/
+COPY --chmod=755 scripts/docker/container/backport-ct-ng-gcc16.sh /usr/local/bin/backport-ct-ng-gcc16.sh
 
 USER ctuser
 WORKDIR /tmp
 
-# Build ct-ng 1.28 from source — 0 patches
+# Build ct-ng 1.28 from source + register the GCC 16.1.0 package.
 RUN set -eux; \
     cd /tmp; \
     tar xJf ct-ng-1.28.0-release.tar.xz; \
     cd crosstool-ng-1.28.0; \
+    backport-ct-ng-gcc16.sh prepare --aarch64; \
     ./configure --prefix=/opt/ct-ng-1.28; \
     make -j"$(nproc)"; \
     make install; \
+    backport-ct-ng-gcc16.sh install /opt/ct-ng-1.28 --aarch64; \
     cd /tmp; rm -rf crosstool-ng-1.28.0 ct-ng-1.28.0-release.tar.xz; \
     /opt/ct-ng-1.28/bin/ct-ng version | head -1; \
-    /opt/ct-ng-1.28/bin/ct-ng list-versions GCC 2>/dev/null | grep "15.2.0" || true; \
+    /opt/ct-ng-1.28/bin/ct-ng list-versions GCC 2>/dev/null | grep "16.1.0" || true; \
     /opt/ct-ng-1.28/bin/ct-ng list-versions GLIBC 2>/dev/null | grep "2.17" || true
 
 USER root

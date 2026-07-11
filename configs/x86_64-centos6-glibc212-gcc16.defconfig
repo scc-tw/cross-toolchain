@@ -1,9 +1,9 @@
-# Crosstool-ng 1.25.0 defconfig — EXPERIMENTAL: GCC 15.2.0 + glibc 2.12.1
+# Crosstool-ng 1.25.0 defconfig — EXPERIMENTAL: GCC 16.1.0 + glibc 2.12.1
 #
 # This is the experimental "Phase 1" config: pin ct-ng at 1.25 (last release
-# with glibc 2.12 support) but backport GCC 15.2.0 (released 2025-08-15) into
+# with glibc 2.12 support) but backport GCC 16.1.0 (released 2026-04-30) into
 # its package metadata. ct-ng upstream has never tested this combination —
-# expect glibc 2.12 source vs GCC 15 strict-mode collisions.
+# expect glibc 2.12 source vs GCC 16 strict-mode collisions.
 #
 # Sister config: x86_64-centos6-glibc212.defconfig (uses GCC 11.2.0 — the
 # original verified-working combo, kept for the macOS host build path).
@@ -11,7 +11,7 @@
 # Target tuple:  x86_64-centos6-linux-gnu
 # Versions:
 #   ct-ng     1.25.0  (last release with glibc 2.12 in packages/glibc/)
-#   GCC       15.2.0  (backported via toolchain/patches/ct-ng-1.25-gcc15-backport/)
+#   GCC       16.1.0  (backported via toolchain/patches/ct-ng-gcc16-backport/)
 #   glibc     2.12.1  (CentOS 6 ABI floor, 2010-released)
 #   binutils  2.38
 #   kernel    2.6.32.71
@@ -69,7 +69,7 @@ CT_OVERRIDE_CONFIG_GUESS_SUB=y
 # needed because libstdc++'s Makefile already adds -Wno-error=narrowing
 # internally for its own build.
 #
-# Underlying anomaly we're papering over: GCC 15 building libstdc++/libitm
+# Underlying anomaly we're papering over: GCC 15+ building libstdc++/libitm
 # against glibc 2.12 sysroot sees uintptr_t as 'unsigned int' (32-bit) in
 # x86_64 compile context. -fpermissive lets libstdc++ accept the cast;
 # libitm we sidestep entirely with --disable-libitm in CT_CC_GCC_EXTRA_CONFIG
@@ -77,7 +77,7 @@ CT_OVERRIDE_CONFIG_GUESS_SUB=y
 CT_TARGET_CFLAGS="-fpermissive -Wno-error=pointer-to-int-cast -Wno-error=int-to-pointer-cast -Wno-error=stringop-overflow"
 
 # === GCC configure extra args ===
-# Disable libitm (Intel Transactional Memory): GCC 15 + glibc 2.12 hits
+# Disable libitm (Intel Transactional Memory): GCC 15+ + glibc 2.12 hits
 # pointer-precision errors that even -fpermissive + -Wno-error=permissive
 # can't reliably defeat (libitm Makefile re-adds -Werror=permissive
 # internally). libitm has no real use in our cgo Go target → skip.
@@ -87,7 +87,7 @@ CT_TARGET_CFLAGS="-fpermissive -Wno-error=pointer-to-int-cast -Wno-error=int-to-
 # permissive-class) in libitm/libstdc++ etc. to errors, defeating our
 # CT_TARGET_CFLAGS demotions. With --disable-werror the bootstrap doesn't
 # auto-add -Werror, so our `-fpermissive`/`-Wno-error=*` actually take effect
-# in libitm. Side effect: real build-time warnings in GCC 15.2 source no
+# in libitm. Side effect: real build-time warnings in GCC 16.1 source no
 # longer abort build — fine for stable release. See docker_experiments.md
 # Phase 1.2 survey for full reasoning.
 CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"
@@ -111,9 +111,9 @@ CT_GLIBC_BUILD_SSP=y
 CT_GLIBC_SSP_DEFAULT=y
 CT_GLIBC_ENABLE_OBSOLETE_RPC=y
 
-# Workaround flags for glibc 2.12 source built with GCC 15.
+# Workaround flags for glibc 2.12 source built with GCC 16.
 #
-# Two distinct kinds of GCC 15 / glibc 2.12 conflict:
+# Two distinct kinds of GCC 16 / glibc 2.12 conflict:
 #
 # 1. *Warnings promoted to errors*. GCC 14+ promotes -Wimplicit-int /
 #    -Wincompatible-pointer-types / -Wint-conversion / etc. to hard errors
@@ -132,7 +132,7 @@ CT_GLIBC_ENABLE_OBSOLETE_RPC=y
 #    to "modern but pre-C23").
 #
 # If build still fails, add more -Wno-error=* here OR write source patches
-# in toolchain/patches/ct-ng-1.25-gcc15-backport/packages/glibc/2.12.1/.
+# in patches/ct-ng-1.25-gcc15-backport/packages/glibc/2.12.1/.
 # NOTE: -std=gnu17 alone is *not* enough. GCC 14+ made several specific
 # warnings into hard errors *by default* (not via -Werror). They need
 # explicit -Wno-error=<name> demotion (or -Wno-<name> outright disable):
@@ -153,15 +153,15 @@ CT_BINUTILS_PLUGINS=y
 CT_BINUTILS_DETERMINISTIC_ARCHIVES=y
 CT_BINUTILS_EXTRA_CONFIG_ARRAY="--with-system-zlib"
 
-# === C compiler (GCC 15.2.0 — BACKPORTED) ===
-# Companion lib version requirements for GCC 15:
+# === C compiler (GCC 16.1.0 — BACKPORTED) ===
+# Companion lib version requirements for GCC 16:
 #   GMP    >= 6.2  ✓ (we ship 6.2.1)
 #   MPFR   >= 4.1  ✓ (we ship 4.1.0)
 #   MPC    >= 1.2  ✓ (we ship 1.2.1)
 #   ISL    >= 0.18 ✓ (we ship 0.24)
 CT_CC_GCC=y
-CT_GCC_V_15=y
-CT_GCC_VERSION="15.2.0"
+CT_GCC_V_16=y
+CT_GCC_VERSION="16.1.0"
 CT_CC_LANG_C=y
 CT_CC_LANG_CXX=y
 CT_CC_GCC_LIBSTDCXX=y
@@ -189,12 +189,12 @@ CT_MPFR_VERSION="4.1.0"
 CT_MPC_VERSION="1.2.1"
 CT_ISL_VERSION="0.24"
 
-# === Cross debugger (GDB 16.3 — BACKPORTED, paired with GCC 15.2) ===
-# GCC 15.2 (2025-08) emits DWARF 5 with C++23 demangling that needs GDB 16+
+# === Cross debugger (GDB 16.3 — BACKPORTED, paired with GCC 16.1) ===
+# GCC 16.1 emits DWARF 5 with C++23 demangling that needs GDB 16+
 # to consume properly. GDB 16.3 (2025-09) is the first GDB release after
-# GCC 15.2 and is the natural pair (Linux From Scratch + ct-ng 1.28 both ship
+# GCC 16.1 and is the natural pair (Linux From Scratch + ct-ng master both ship
 # this combo). ct-ng 1.25 native max is GDB 11.2 (2022) — too old to demangle
-# C++23 lambdas / understand new DWARF tags. Backported same as GCC 15.
+# C++23 lambdas / understand new DWARF tags. Backported with GCC 16.
 #
 # Builds: cross-gdb (host-side, debugs x86_64-centos6 target binaries) +
 # gdbserver (target-side, runs on the deployment box for remote debug).

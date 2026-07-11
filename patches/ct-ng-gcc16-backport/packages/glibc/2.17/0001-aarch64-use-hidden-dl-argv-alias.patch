@@ -1,0 +1,12 @@
+AArch64 rtld startup code must use the hidden _dl_argv alias.
+
+Newer binutils reject a relocation to the externally bindable _dl_argv while
+linking ld.so. glibc 2.17 exposes the hidden alias as _dl_argv_internal.
+
+--- a/ports/sysdeps/aarch64/dl-machine.h
++++ b/ports/sysdeps/aarch64/dl-machine.h
+@@ -171,2 +171,2 @@
+-	adrp	x3, _dl_argv					\n\
+-	str	x2, [x3, #:lo12:_dl_argv]			\n\
++	adrp	x3, _dl_argv_internal					\n\
++	str	x2, [x3, #:lo12:_dl_argv_internal]			\n\
