@@ -132,19 +132,6 @@ if [[ ! -x "${GCC_BIN}" ]]; then
     exit 1
 fi
 
-if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
-    OVERLAY=/opt/glibc-2.12.1-x86_64-multilib-sysroot/usr/include
-    if [[ ! -d "${OVERLAY}" ]]; then
-        echo "FAIL: missing glibc multilib header overlay: ${OVERLAY}" >&2
-        exit 1
-    fi
-
-    echo "=== applying glibc 2.12 x86_64 multilib header overlay ==="
-    chmod -R u+w "${SYSROOT}/usr/include"
-    cp -a "${OVERLAY}/." "${SYSROOT}/usr/include/"
-    chmod -R u-w "${SYSROOT}/usr/include"
-fi
-
 check_wordsize() {
     local label="$1"
     local cflag="$2"
@@ -181,8 +168,52 @@ echo "sysroot: ${SYSROOT}"
 
 echo "target header sanity:"
 if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
-    check_wordsize "m64" "" 8 64 "(18446744073709551615UL)"
-    check_wordsize "m32" "-m32" 4 32 "(4294967295U)"
+    /usr/local/bin/validate-centos6-multilib-abi.sh "${GCC_BIN}" "${SYSROOT}"
+
+    echo "optimized C++ runtime sanity:"
+    CXX_BIN="${PREFIX}/bin/${TARGET}-g++"
+    CXX_REPRO_SOURCE=/usr/local/share/cross-toolchain/centos6-libstdcxx-o2-repro.cpp
+    CXX_GATE_DIR="${WORK}/centos6-libstdcxx-runtime-gate"
+    CXX_RUNTIME_LIB_DIR=$(dirname "$("${CXX_BIN}" -print-file-name=libstdc++.so.6)")
+    rm -rf "${CXX_GATE_DIR}"
+    mkdir -p "${CXX_GATE_DIR}"
+    printf test > /tmp/centos6-libstdcxx-o2-repro-input
+    "${CXX_BIN}" -std=c++17 -O2 -static-libstdc++ -static-libgcc \
+        "${CXX_REPRO_SOURCE}" -o "${CXX_GATE_DIR}/repro-static"
+    "${CXX_BIN}" -std=c++17 -O2 \
+        "${CXX_REPRO_SOURCE}" -o "${CXX_GATE_DIR}/repro-dynamic"
+    timeout 30s "${CXX_GATE_DIR}/repro-static"
+    LD_LIBRARY_PATH="${CXX_RUNTIME_LIB_DIR}" \
+        timeout 30s "${CXX_GATE_DIR}/repro-dynamic"
+    echo "PASS: optimized static and dynamic C++ runtime sanity"
+
+    run_sysroot_cxx_gate() {
+        local label="$1"
+        local cflag="$2"
+        local loader="$3"
+        local library_path="$4"
+        local binary="${CXX_GATE_DIR}/repro-sysroot-${label}"
+
+        if [[ ! -x "${loader}" ]]; then
+            echo "FAIL: ${label} sysroot loader missing/non-exec: ${loader}" >&2
+            exit 1
+        fi
+
+        "${CXX_BIN}" "${cflag}" -std=c++17 -O2 \
+            "${CXX_REPRO_SOURCE}" -o "${binary}"
+        timeout 30s "${loader}" --library-path "${library_path}" "${binary}"
+    }
+
+    echo "sysroot-loader C++ runtime sanity:"
+    run_sysroot_cxx_gate \
+        m64 -m64 \
+        "${SYSROOT}/lib64/ld-linux-x86-64.so.2" \
+        "${SYSROOT}/lib64:${SYSROOT}/usr/lib64"
+    run_sysroot_cxx_gate \
+        m32 -m32 \
+        "${SYSROOT}/lib/ld-linux.so.2" \
+        "${SYSROOT}/lib:${SYSROOT}/usr/lib"
+    echo "PASS: optimized m64 and m32 C++ runtime sanity through sysroot loaders"
 else
     check_wordsize "default" "" 8 64 "(18446744073709551615UL)"
 fi

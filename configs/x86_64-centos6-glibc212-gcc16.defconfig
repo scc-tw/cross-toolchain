@@ -43,53 +43,17 @@ CT_MULTILIB=y
 # Linux arm64), but keep it on for portability.
 CT_OVERRIDE_CONFIG_GUESS_SUB=y
 
-# === Target CFLAGS for libgcc / libatomic / libstdc++ etc. ===
-# Flags GCC uses when building its OWN runtime libraries for the target.
-# (NOT applied to user code that uses the resulting toolchain — that's
-# governed by user's build flags.)
-#
-# Demotions for GCC 14+ defaults that broke libatomic build vs glibc 2.12:
-#   -Wpointer-to-int-cast / -Wint-to-pointer-cast : libatomic does
-#     (uintptr_t)void_ptr alignment masks that fire this warning in some
-#     contexts (cast is technically valid since uintptr_t == pointer width).
-#
-# `-fpermissive` is C++ only. ct-ng 1.25 falls cxxflags_for_target back to
-# cflags_for_target if no separate var, so listing here gets it into both.
-# GCC silently ignores -fpermissive in pure C compiles. Side effect: same
-# C++ source may now warn loudly about pointer-truncation casts that the
-# compiler thinks lose precision (libstdc++ mt_allocator.cc reinterpret_cast
-# from void* to uintptr_t hits this somehow even on x86_64). Pragmatic fix
-# until we figure out why GCC sees uintptr_t as `unsigned int` here.
-# Two demotions for legacy C casts that GCC 14+ promotes to default error:
-#   -Wno-error=pointer-to-int-cast / -Wno-error=int-to-pointer-cast
-# Plus -fpermissive for C++ "loses precision" errors in libstdc++.
-#
-# IMPORTANT: -Wno-error=narrowing was tried but broke stage-1 libgcc configure
-# (its conftest.c compile failed). Removed. The narrowing demotion isn't
-# needed because libstdc++'s Makefile already adds -Wno-error=narrowing
-# internally for its own build.
-#
-# Underlying anomaly we're papering over: GCC 15+ building libstdc++/libitm
-# against glibc 2.12 sysroot sees uintptr_t as 'unsigned int' (32-bit) in
-# x86_64 compile context. -fpermissive lets libstdc++ accept the cast;
-# libitm we sidestep entirely with --disable-libitm in CT_CC_GCC_EXTRA_CONFIG
-# (libitm = Intel TM, never used in cgo Go workloads).
-CT_TARGET_CFLAGS="-fpermissive -Wno-error=pointer-to-int-cast -Wno-error=int-to-pointer-cast -Wno-error=stringop-overflow"
+# === Target runtime CFLAGS ===
+# Final GCC runtimes must compile cleanly against the restored default-ABI
+# headers. Do not demote pointer-width diagnostics: they are a hard build gate
+# against another mixed x86_64/i686 sysroot.
+CT_TARGET_CFLAGS=""
 
 # === GCC configure extra args ===
-# Disable libitm (Intel Transactional Memory): GCC 15+ + glibc 2.12 hits
-# pointer-precision errors that even -fpermissive + -Wno-error=permissive
-# can't reliably defeat (libitm Makefile re-adds -Werror=permissive
-# internally). libitm has no real use in our cgo Go target → skip.
-# Also disable libsanitizer (was already off in defconfig) for clarity.
 # --disable-werror: GCC bootstrap stage2+ default adds -Werror via
-# `--enable-werror-always` flag. That flag promotes warnings (especially
-# permissive-class) in libitm/libstdc++ etc. to errors, defeating our
-# CT_TARGET_CFLAGS demotions. With --disable-werror the bootstrap doesn't
-# auto-add -Werror, so our `-fpermissive`/`-Wno-error=*` actually take effect
-# in libitm. Side effect: real build-time warnings in GCC 16.1 source no
-# longer abort build — fine for stable release. See docker_experiments.md
-# Phase 1.2 survey for full reasoning.
+# `--enable-werror-always`. Keep upstream release warnings from breaking the
+# compiler bootstrap; target runtime pointer-width errors remain fatal because
+# CT_TARGET_CFLAGS no longer contains permissive demotions.
 CT_CC_GCC_EXTRA_CONFIG_ARRAY="--disable-werror"
 
 # === Install location (inside container) ===

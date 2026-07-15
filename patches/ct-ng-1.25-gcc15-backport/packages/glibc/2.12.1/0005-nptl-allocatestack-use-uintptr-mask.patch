@@ -1,0 +1,23 @@
+From 4b3d3e282a1c8a755bf5e02dd451158bdabbfcd8 Mon Sep 17 00:00:00 2001
+From: Roland McGrath <roland@hack.frob.com>
+Date: Thu, 14 Jul 2011 20:47:19 -0700
+Subject: [PATCH] Quash a warning in nptl/allocatestack.c
+
+Backport the upstream pointer-width mask fix.  UINTMAX_C (1) promotes the
+expression to 64 bits in an i686 build before it is cast to a 32-bit pointer,
+which GCC 16 diagnoses with -Wint-to-pointer-cast.  in_flight_stack is already
+uintptr_t, so keeping the mask at the same width preserves the intended value.
+
+Upstream commit: 4b3d3e282a1c8a755bf5e02dd451158bdabbfcd8
+
+--- a/nptl/allocatestack.c
++++ b/nptl/allocatestack.c
+@@ -824,7 +824,7 @@ __reclaim_stacks (void)
+   if (in_flight_stack != 0)
+     {
+       bool add_p = in_flight_stack & 1;
+-      list_t *elem = (list_t *) (in_flight_stack & ~UINTMAX_C (1));
++      list_t *elem = (list_t *) (in_flight_stack & ~(uintptr_t) 1);
+ 
+       if (add_p)
+ 	{

@@ -4,8 +4,8 @@
 #   Build ct-ng 1.25 from source + backport GCC 16.1.0 metadata
 #   → produce x86_64-centos6-linux-gnu (glibc 2.12.1 + GCC 16.1.0)
 #   With MULTILIB: x86_64 (default) + i686 (-m32) sysroots both built.
-#   A post-build header overlay keeps -m64 on 64-bit glibc headers while -m32
-#   keeps using 32-bit glibc headers.
+#   The ct-ng engine preserves default-ABI shared headers before final GCC so
+#   both target runtimes and consumers use the same multilib ABI definitions.
 #
 # Phase 2 (separate file: Dockerfile.phase2):
 #   ct-ng 1.28 native (no backport) → aarch64-centos7-linux-gnu
@@ -137,7 +137,9 @@ RUN touch /var/mail/ubuntu && chown ubuntu /var/mail/ubuntu && \
 COPY --chown=ctuser:ctuser vendor/ct-ng-1.25.0-release.tar.xz /tmp/
 COPY --chown=ctuser:ctuser patches/ct-ng-1.25-gcc15-backport/ /tmp/gcc15-backport/
 COPY --chown=ctuser:ctuser patches/ct-ng-gcc16-backport/ /tmp/gcc16-backport/
-COPY --chown=ctuser:ctuser patches/glibc-2.12.1-x86_64-multilib-sysroot/ /opt/glibc-2.12.1-x86_64-multilib-sysroot/
+COPY --chown=ctuser:ctuser patches/ct-ng-1.25-engine/ /tmp/ct-ng-engine/
+COPY --chmod=755 --chown=ctuser:ctuser scripts/docker/container/validate-centos6-multilib-abi.sh /usr/local/bin/
+COPY --chown=ctuser:ctuser smoke-test/centos6-libstdcxx-o2-repro.cpp /usr/local/share/cross-toolchain/
 
 # All defconfigs (baked into image; defconfig name passed at docker run time)
 COPY --chown=ctuser:ctuser configs/ /configs/
@@ -168,6 +170,11 @@ RUN set -eux; \
     cd /tmp; \
     tar xJf ct-ng-1.25.0-release.tar.xz; \
     cd crosstool-ng-1.25.0; \
+    \
+    ##### crosstool-NG 1.25 engine fixes #####
+    patch --batch -p1 < /tmp/ct-ng-engine/0001-glibc-2.12.1-preserve-x86_64-default-multilib-headers.patch; \
+    grep -q CROSS_TOOLCHAIN_GLIBC_2_12_1_X86_64_MULTILIB_HEADER_SNAPSHOT \
+        scripts/build/libc/glibc.sh; \
     \
     ##### GCC 16.1.0 backport #####
     # 1. Drop GCC 16.1.0 package metadata and target-specific source patches.
@@ -325,6 +332,8 @@ RUN set -eux; \
     ./configure --prefix=/opt/ct-ng-1.25; \
     make -j"$(nproc)"; \
     make install; \
+    grep -q CROSS_TOOLCHAIN_GLIBC_2_12_1_X86_64_MULTILIB_HEADER_SNAPSHOT \
+        /opt/ct-ng-1.25/share/crosstool-ng/scripts/build/libc/glibc.sh; \
     \
     ##### Install our backport package dirs + patches into ct-ng's installed tree #####
     # ct-ng's Makefile.am has a HARDCODED list of packages/files to install.
@@ -351,10 +360,13 @@ RUN set -eux; \
     cp -v /tmp/gcc15-backport/packages/binutils/2.38/*.patch \
         ${INSTALLED}/binutils/2.38/ 2>/dev/null || true; \
     \
-    # Verify: rtld + csu + nptl + morestack patches all landed in install dir
+    # Verify: glibc compatibility + morestack patches landed in install dir
     test -f ${INSTALLED}/glibc/2.12.1/0001-tls-x86_64-fix-imm-mode-movq-gcc15.patch; \
     test -f ${INSTALLED}/glibc/2.12.1/0002-csu-Makefile-disable-cfi-in-initfini-gcc15.patch; \
     test -f ${INSTALLED}/glibc/2.12.1/0003-nptl-Makefile-disable-cfi-in-pt-initfini-gcc15.patch; \
+    test -f ${INSTALLED}/glibc/2.12.1/0004-bits-select-no-asm-FD_ZERO-gcc15.patch; \
+    test -f ${INSTALLED}/glibc/2.12.1/0005-nptl-allocatestack-use-uintptr-mask.patch; \
+    test -f ${INSTALLED}/glibc/2.12.1/0006-elf-disable-ctors-dtors-with-modern-linker.patch; \
     test -f ${INSTALLED}/gcc/15.2.0/chksum; \
     test -f ${INSTALLED}/gcc/15.2.0/0001-libgcc-generic-morestack-guard-NR-mmap2.patch; \
     test -f ${INSTALLED}/gcc/16.1.0/chksum; \

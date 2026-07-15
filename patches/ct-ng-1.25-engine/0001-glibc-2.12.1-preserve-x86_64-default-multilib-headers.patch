@@ -1,0 +1,86 @@
+Subject: [PATCH] glibc: preserve x86_64 default multilib headers
+
+glibc 2.12.1 installs headers for every multilib into the shared sysroot
+include directory.  The later i686 install can therefore replace headers
+selected by the default x86_64 ABI.
+
+Snapshot the complete include tree immediately after the default ABI install
+and overlay it after all multilibs have been installed.  Using an overlay
+rather than replacing the tree retains ABI-specific files produced only by
+the i686 install, notably gnu/stubs-32.h.
+
+---
+ scripts/build/libc/glibc.sh | 42 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 41 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/build/libc/glibc.sh b/scripts/build/libc/glibc.sh
+--- a/scripts/build/libc/glibc.sh
++++ b/scripts/build/libc/glibc.sh
+@@ -34,10 +34,35 @@ glibc_extract()
+ glibc_main()
+ {
+     local arg
++    local default_headers_snapshot="${CT_BUILD_DIR}/glibc-default-usr-include"
++    local preserve_default_headers
++
++    # CROSS_TOOLCHAIN_GLIBC_2_12_1_X86_64_MULTILIB_HEADER_SNAPSHOT
++    if [ "${CT_ARCH}" = "x86" ] &&
++       [ "${CT_ARCH_64}" = "y" ] &&
++       [ "${CT_MULTILIB}" = "y" ] &&
++       [ "${CT_GLIBC_VERSION}" = "2.12.1" ]; then
++        preserve_default_headers=y
++        CT_DoLog DEBUG "Removing stale default ABI glibc header snapshot"
++        CT_DoExecLog ALL rm -rf "${default_headers_snapshot}"
++    fi
+ 
+     CT_DoStep INFO "Installing C library"
+     CT_mkdir_pushd "${CT_BUILD_DIR}/build-libc"
+-    CT_IterateMultilibs glibc_backend_once multilib
++    CT_IterateMultilibs glibc_backend_once multilib \
++        default_headers_snapshot="${default_headers_snapshot}"
++    if [ "${preserve_default_headers}" = "y" ]; then
++        if [ ! -d "${default_headers_snapshot}" ]; then
++            CT_Abort "Default ABI glibc header snapshot was not created"
++        fi
++        CT_DoLog EXTRA "Restoring default ABI C library headers"
++        CT_DoExecLog ALL cp -a "${default_headers_snapshot}/." \
++                               "${CT_HEADERS_DIR}/"
++        CT_DoLog EXTRA "Validating restored multilib C library headers"
++        CT_DoExecLog ALL /usr/local/bin/validate-centos6-multilib-abi.sh \
++            "${CT_TARGET}-${CT_CC}" "${CT_SYSROOT_DIR}"
++        CT_DoExecLog ALL rm -rf "${default_headers_snapshot}"
++    fi
+     CT_Popd
+     CT_EndStep
+ }
+@@ -57,6 +82,7 @@ glibc_backend_once()
+     local -a extra_config
+     local -a extra_make_args
+     local glibc_cflags
++    local default_headers_snapshot
+     local arg opt
+ 
+     for arg in "$@"; do
+@@ -281,6 +307,20 @@ glibc_backend_once()
+                           install_root="${multi_root}"    \
+                           install
+ 
++    if [ "${CT_ARCH}" = "x86" ] &&
++       [ "${CT_ARCH_64}" = "y" ] &&
++       [ "${CT_MULTILIB}" = "y" ] &&
++       [ "${CT_GLIBC_VERSION}" = "2.12.1" ] &&
++       [ "${multi_dir}" = "." ]; then
++        CT_DoLog EXTRA "Snapshotting default ABI C library headers"
++        if [ -e "${default_headers_snapshot}" ]; then
++            CT_Abort "Default ABI glibc header snapshot already exists"
++        fi
++        CT_DoExecLog ALL mkdir -p "${default_headers_snapshot}"
++        CT_DoExecLog ALL cp -a "${multi_root}/usr/include/." \
++                               "${default_headers_snapshot}/"
++    fi
++
+     if [ "${CT_BUILD_MANUALS}" = "y" -a "${multi_index}" = "${multi_count}" ]; then
+         # We only need to build the manuals once. Only build them on the
+         # last multilib target. If it's not multilib, it will happen on the
+-- 
+2.39.5
