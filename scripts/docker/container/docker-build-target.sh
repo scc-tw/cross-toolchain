@@ -173,6 +173,7 @@ if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
     echo "optimized C++ runtime sanity:"
     CXX_BIN="${PREFIX}/bin/${TARGET}-g++"
     CXX_REPRO_SOURCE=/usr/local/share/cross-toolchain/centos6-libstdcxx-o2-repro.cpp
+    CXX_CANCEL_SOURCE=/usr/local/share/cross-toolchain/pthread-cancel-cxx-unwind.cpp
     CXX_GATE_DIR="${WORK}/centos6-libstdcxx-runtime-gate"
     CXX_RUNTIME_LIB_DIR=$(dirname "$("${CXX_BIN}" -print-file-name=libstdc++.so.6)")
     rm -rf "${CXX_GATE_DIR}"
@@ -186,6 +187,19 @@ if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
     LD_LIBRARY_PATH="${CXX_RUNTIME_LIB_DIR}" \
         timeout 30s "${CXX_GATE_DIR}/repro-dynamic"
     echo "PASS: optimized static and dynamic C++ runtime sanity"
+
+    echo "pthread cancellation C++ unwind sanity:"
+    "${CXX_BIN}" -std=c++17 -O2 -pthread -static-libstdc++ -static-libgcc \
+        "${CXX_CANCEL_SOURCE}" -o "${CXX_GATE_DIR}/cancel-static-libgcc"
+    "${CXX_BIN}" -std=c++17 -O2 -pthread -static-libstdc++ -shared-libgcc \
+        "${CXX_CANCEL_SOURCE}" -o "${CXX_GATE_DIR}/cancel-shared-libgcc"
+    timeout 30s "${SYSROOT}/lib64/ld-linux-x86-64.so.2" \
+        --library-path "${SYSROOT}/lib64:${SYSROOT}/usr/lib64:${CXX_RUNTIME_LIB_DIR}" \
+        "${CXX_GATE_DIR}/cancel-static-libgcc"
+    timeout 30s "${SYSROOT}/lib64/ld-linux-x86-64.so.2" \
+        --library-path "${SYSROOT}/lib64:${SYSROOT}/usr/lib64:${CXX_RUNTIME_LIB_DIR}" \
+        "${CXX_GATE_DIR}/cancel-shared-libgcc"
+    echo "PASS: static and shared libgcc pthread cancellation C++ unwind sanity"
 
     run_sysroot_cxx_gate() {
         local label="$1"

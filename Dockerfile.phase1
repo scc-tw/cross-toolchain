@@ -140,6 +140,7 @@ COPY --chown=ctuser:ctuser patches/ct-ng-gcc16-backport/ /tmp/gcc16-backport/
 COPY --chown=ctuser:ctuser patches/ct-ng-1.25-engine/ /tmp/ct-ng-engine/
 COPY --chmod=755 --chown=ctuser:ctuser scripts/docker/container/validate-centos6-multilib-abi.sh /usr/local/bin/
 COPY --chown=ctuser:ctuser smoke-test/centos6-libstdcxx-o2-repro.cpp /usr/local/share/cross-toolchain/
+COPY --chown=ctuser:ctuser smoke-test/pthread-cancel-cxx-unwind.cpp /usr/local/share/cross-toolchain/
 
 # All defconfigs (baked into image; defconfig name passed at docker run time)
 COPY --chown=ctuser:ctuser configs/ /configs/
@@ -360,7 +361,7 @@ RUN set -eux; \
     cp -v /tmp/gcc15-backport/packages/binutils/2.38/*.patch \
         ${INSTALLED}/binutils/2.38/ 2>/dev/null || true; \
     \
-    # Verify: glibc compatibility + morestack patches landed in install dir
+    # Verify: glibc compatibility + libgcc patches landed in install dir
     test -f ${INSTALLED}/glibc/2.12.1/0001-tls-x86_64-fix-imm-mode-movq-gcc15.patch; \
     test -f ${INSTALLED}/glibc/2.12.1/0002-csu-Makefile-disable-cfi-in-initfini-gcc15.patch; \
     test -f ${INSTALLED}/glibc/2.12.1/0003-nptl-Makefile-disable-cfi-in-pt-initfini-gcc15.patch; \
@@ -371,6 +372,7 @@ RUN set -eux; \
     test -f ${INSTALLED}/gcc/15.2.0/0001-libgcc-generic-morestack-guard-NR-mmap2.patch; \
     test -f ${INSTALLED}/gcc/16.1.0/chksum; \
     test -f ${INSTALLED}/gcc/16.1.0/0002-libgcc-generic-morestack-guard-NR-mmap2.patch; \
+    test -f ${INSTALLED}/gcc/16.1.0/0003-libgcc-initialize-register-sizes-in-accessors.patch; \
     test -f ${INSTALLED}/gdb/16.3/chksum; \
     \
     # cleanup source — keep image small

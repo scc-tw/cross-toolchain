@@ -24,6 +24,7 @@ case "$action" in
         cp -r "$BACKPORT/packages/gcc/16.1.0" packages/gcc/
         # This workaround is only needed by the CentOS 6 glibc 2.12 build.
         rm -f packages/gcc/16.1.0/0002-libgcc-generic-morestack-guard-NR-mmap2.patch
+        test -f packages/gcc/16.1.0/0003-libgcc-initialize-register-sizes-in-accessors.patch
         if "$aarch64"; then
             cp "$BACKPORT/packages/glibc/2.17/0001-aarch64-use-hidden-dl-argv-alias.patch" \
                 packages/glibc/2.17/
@@ -98,6 +99,7 @@ case "$action" in
         cp -r "$BACKPORT/packages/gcc/16.1.0" "$installed/gcc/"
         rm -f "$installed/gcc/16.1.0/0002-libgcc-generic-morestack-guard-NR-mmap2.patch"
         test -f "$installed/gcc/16.1.0/chksum"
+        test -f "$installed/gcc/16.1.0/0003-libgcc-initialize-register-sizes-in-accessors.patch"
         if "$aarch64"; then
             cp "$BACKPORT/packages/glibc/2.17/0001-aarch64-use-hidden-dl-argv-alias.patch" \
                 "$installed/glibc/2.17/"
