@@ -1,0 +1,94 @@
+Fix numeric timezone saves and distinguish external from embedded tzdata.
+
+Backport the source change from GCC commit 864f26bd7548d1a290b334b8f5375199449fcff5
+for PR libstdc++/124851.  Also track the active tzdata_stream union member
+explicitly.  Comparing the addresses of the overlapping filebuf and spanbuf
+members incorrectly identifies external tzdata as embedded data, allowing a
+missing or invalid external leapseconds file to pass silently.
+
+IERS Bulletin C 72 confirms that no leap second will be introduced at the end
+of December 2026, so extend the hardcoded leap table's validity through the
+next possible leap-second boundary.
+
+--- a/libstdc++-v3/include/std/chrono
++++ b/libstdc++-v3/include/std/chrono
+@@ -3254,7 +3254,7 @@ namespace chrono
+       };
+       // The list above is known to be valid until (at least) this date
+       // and only contains positive leap seconds.
+-      constexpr sys_seconds __expires(1798416000s); // 2026-12-28 00:00:00 UTC
++      constexpr sys_seconds __expires(1814140800s); // 2027-06-28 00:00:00 UTC
+ 
+ #if _GLIBCXX_USE_CXX11_ABI || ! _GLIBCXX_USE_DUAL_ABI
+       if (__ss > __expires)
+--- a/libstdc++-v3/src/c++20/tzdb.cc
++++ b/libstdc++-v3/src/c++20/tzdb.cc
+@@ -478,12 +478,13 @@ namespace std::chrono
+ 
+       ZoneInfo(sys_info&& info)
+       : m_buf(std::move(info.abbrev)), m_expanded(true), m_save(info.save),
+-	m_offset(info.offset), m_until(info.end)
++	m_offset(info.offset - seconds(info.save)), m_until(info.end)
+       { }
+ 
+       ZoneInfo(const pair<sys_info, string_view>& info)
+-      : m_expanded(true), m_save(info.first.save), m_offset(info.first.offset),
+-	m_until(info.first.end)
++      : m_expanded(true), m_save(info.first.save),
++	m_offset(info.first.offset - seconds(info.first.save)),
++	m_until(info.first.end)
+       {
+ 	if (info.second.size())
+ 	  {
+@@ -494,7 +495,7 @@ namespace std::chrono
+ 	m_buf += info.first.abbrev;
+       }
+ 
+-      // STDOFF: Seconds from UTC during standard time.
++      // STDOFF: Seconds from UTC during standard time (without any save).
+       seconds
+       offset() const noexcept { return m_offset; }
+ 
+@@ -539,7 +540,7 @@ namespace std::chrono
+ 	  return false;
+ 
+ 	info.end = until();
+-	info.offset = offset();
++	info.offset = offset() + seconds(m_save);
+ 	info.save = minutes(m_save);
+ 	info.abbrev = format();
+ 	format_abbrev_str(info); // expand %z
+@@ -1227,6 +1228,7 @@ namespace std::chrono
+ 	filebuf fb;
+ 	ispanbuf sb;
+       };
++      bool use_static_data = false;
+ 
+       tzdata_stream() : istream(nullptr)
+       {
+@@ -1241,12 +1243,13 @@ namespace std::chrono
+ 	    }
+ 	}
+ 	std::construct_at(&sb);
++	use_static_data = true;
+ 	this->init(&sb);
+       }
+ 
+       ~tzdata_stream() { std::destroy_at(this->rdbuf()); } // use virtual dtor
+ 
+-      bool using_static_data() const { return this->rdbuf() == &sb; }
++      bool using_static_data() const { return use_static_data; }
+     };
+   }
+ #endif // TZDB_DISABLED
+@@ -1256,8 +1259,8 @@ namespace std::chrono
+   pair<vector<leap_second>, bool>
+   tzdb_list::_Node::_S_read_leap_seconds()
+   {
+-    // This list is valid until at least 2026-12-28 00:00:00 UTC.
+-    constexpr auto expires = sys_days{2026y/12/28};
++    // This list is valid until at least 2027-06-28 00:00:00 UTC.
++    constexpr auto expires = sys_days{2027y/6/28};
+     vector<leap_second> leaps
+     {
+       (leap_second)  78796800, // 1 Jul 1972

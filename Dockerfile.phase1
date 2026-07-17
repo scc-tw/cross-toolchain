@@ -141,6 +141,7 @@ COPY --chown=ctuser:ctuser patches/ct-ng-1.25-engine/ /tmp/ct-ng-engine/
 COPY --chmod=755 --chown=ctuser:ctuser scripts/docker/container/validate-centos6-multilib-abi.sh /usr/local/bin/
 COPY --chown=ctuser:ctuser smoke-test/centos6-libstdcxx-o2-repro.cpp /usr/local/share/cross-toolchain/
 COPY --chown=ctuser:ctuser smoke-test/pthread-cancel-cxx-unwind.cpp /usr/local/share/cross-toolchain/
+COPY --chown=ctuser:ctuser smoke-test/chrono-tzdb.cpp /usr/local/share/cross-toolchain/
 
 # All defconfigs (baked into image; defconfig name passed at docker run time)
 COPY --chown=ctuser:ctuser configs/ /configs/

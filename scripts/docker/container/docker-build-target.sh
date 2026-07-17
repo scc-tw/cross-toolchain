@@ -174,6 +174,7 @@ if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
     CXX_BIN="${PREFIX}/bin/${TARGET}-g++"
     CXX_REPRO_SOURCE=/usr/local/share/cross-toolchain/centos6-libstdcxx-o2-repro.cpp
     CXX_CANCEL_SOURCE=/usr/local/share/cross-toolchain/pthread-cancel-cxx-unwind.cpp
+    CXX_TZDB_SOURCE=/usr/local/share/cross-toolchain/chrono-tzdb.cpp
     CXX_GATE_DIR="${WORK}/centos6-libstdcxx-runtime-gate"
     CXX_RUNTIME_LIB_DIR=$(dirname "$("${CXX_BIN}" -print-file-name=libstdc++.so.6)")
     rm -rf "${CXX_GATE_DIR}"
@@ -200,6 +201,29 @@ if [[ "${TARGET}" == "x86_64-centos6-linux-gnu" ]]; then
         --library-path "${SYSROOT}/lib64:${SYSROOT}/usr/lib64:${CXX_RUNTIME_LIB_DIR}" \
         "${CXX_GATE_DIR}/cancel-shared-libgcc"
     echo "PASS: static and shared libgcc pthread cancellation C++ unwind sanity"
+
+    echo "C++20 chrono tzdb sanity:"
+    TZDB_TEST_DIR="${CXX_GATE_DIR}/tzdb-no-leaps"
+    TZDB_PARSER_DIR="${CXX_GATE_DIR}/tzdb-parser"
+    mkdir -p "${TZDB_TEST_DIR}"
+    mkdir -p "${TZDB_PARSER_DIR}"
+    printf '# version missing-leaps\nZ Etc/Test 0 - TEST\n' \
+        > "${TZDB_TEST_DIR}/tzdata.zi"
+    printf '%s\n' \
+        '# version parser-regressions' \
+        'Z Test/Gaborone 2 - CAT 1943 Sep 19 2' \
+        '  2 1 CAST 1944 Mar 19 2' \
+        '  2 - CAT' \
+        'Z Test/LastSu 3 - MSK 1997 Mar lastSu 1u' \
+        '  3 - X' \
+        > "${TZDB_PARSER_DIR}/tzdata.zi"
+    printf '# no additional leap seconds\n' > "${TZDB_PARSER_DIR}/leapseconds"
+    "${CXX_BIN}" -std=c++20 -O2 -static-libstdc++ -static-libgcc \
+        "${CXX_TZDB_SOURCE}" -o "${CXX_GATE_DIR}/chrono-tzdb"
+    timeout 30s "${CXX_GATE_DIR}/chrono-tzdb"
+    timeout 30s "${CXX_GATE_DIR}/chrono-tzdb" historical "${TZDB_PARSER_DIR}"
+    timeout 30s "${CXX_GATE_DIR}/chrono-tzdb" missing-leaps "${TZDB_TEST_DIR}"
+    echo "PASS: C++20 chrono tzdb historical rules and data-source handling"
 
     run_sysroot_cxx_gate() {
         local label="$1"
